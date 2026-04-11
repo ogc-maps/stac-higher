@@ -32,6 +32,7 @@
     "maplibre-gl": "^5.22.0",
     "nanostores": "^1.2.0",
     "next-themes": "^0.4.6",
+    "pg": "^8.20.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -47,6 +48,7 @@
     "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/pg": "^8.20.0",
     "jsdom": "^29.0.2",
     "vitest": "^4.1.4"
   }

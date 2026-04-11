@@ -1,5 +1,11 @@
 import type { StacSearchBody } from "@/lib/stac-api/types";
 
+export const extensionKeys = {
+  all: () => ["extensions"] as const,
+  list: () => [...extensionKeys.all(), "list"] as const,
+  detail: (id: string) => [...extensionKeys.all(), id] as const,
+};
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 

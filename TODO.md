@@ -52,16 +52,16 @@ Tasks for agent loop iteration. Pick the top unchecked item, implement it, run `
 
 ## Phase 2 — Database Layer + Extension Infrastructure
 
-- [ ] 2.1 Install `pg` and `@types/pg`. Create database connection module at `app/src/lib/db/connection.ts` — singleton Pool configured from `DATABASE_URL` env var (default: `postgresql://username:password@localhost:5433/postgis`). Export `query()` helper.
-- [ ] 2.2 Create migration module at `app/src/lib/db/migrate.ts`. Create `stac_higher` schema and `stac_higher.extensions` table (id UUID PK, name TEXT, prefix TEXT, version TEXT, description TEXT, schema JSONB, source TEXT CHECK local/external, source_url TEXT, created_at/updated_at TIMESTAMPTZ). Export `runMigrations()`. Wire it to run on first API request via middleware.
-- [ ] 2.3 Create extension storage module at `app/src/lib/extensions/storage.ts` — CRUD functions using `query()`: `listExtensions`, `getExtension`, `createExtension`, `updateExtension`, `deleteExtension`, `getExtensionBySourceUrl`.
-- [ ] 2.4 Define extension TypeScript types at `app/src/lib/extensions/types.ts` — `StacExtension` interface (id, name, prefix, version, description, schema, source, sourceUrl, createdAt, updatedAt), `ExtensionFormData`, `ExtensionPropertyForm`.
-- [ ] 2.5 Create extension Zod schemas at `app/src/lib/extensions/schemas.ts` — `extensionFormSchema`, `extensionPropertySchema`. Include `formToExtensionSchema()` and `extensionToForm()` conversion functions.
-- [ ] 2.6 Create CRUD API routes: `app/src/pages/api/extensions/index.ts` (GET list, POST create) and `app/src/pages/api/extensions/[id].ts` (GET one, PUT update, DELETE). Validate bodies with Zod.
-- [ ] 2.7 Create extension schema hosting route at `app/src/pages/api/extensions/[id]/schema.ts`. Serve JSON Schema with `Content-Type: application/schema+json`. Set `$id` to request URL.
-- [ ] 2.8 Create external extension import route at `app/src/pages/api/extensions/import.ts`. POST with `{ url }`, fetch remote JSON Schema, extract metadata, store as `source: "external"`. Deduplicate by `source_url`.
-- [ ] 2.9 Create client-side API functions at `app/src/lib/extensions/api.ts` and TanStack Query hooks at `app/src/lib/extensions/queries.ts`. Add `extensionKeys` factory to `app/src/lib/query/keys.ts`.
-- [ ] 2.10 Write unit tests: `app/src/__tests__/extensions-schemas.test.ts` (Zod validation, `formToExtensionSchema()` output, round-trip). Storage tests with mocked pg at `app/src/__tests__/extensions-storage.test.ts`.
+- [x] 2.1 Install `pg` and `@types/pg`. Create database connection module at `app/src/lib/db/connection.ts` — singleton Pool configured from `DATABASE_URL` env var (default: `postgresql://username:password@localhost:5433/postgis`). Export `query()` helper.
+- [x] 2.2 Create migration module at `app/src/lib/db/migrate.ts`. Create `stac_higher` schema and `stac_higher.extensions` table (id UUID PK, name TEXT, prefix TEXT, version TEXT, description TEXT, schema JSONB, source TEXT CHECK local/external, source_url TEXT, created_at/updated_at TIMESTAMPTZ). Export `runMigrations()`. Wire it to run on first API request via middleware.
+- [x] 2.3 Create extension storage module at `app/src/lib/extensions/storage.ts` — CRUD functions using `query()`: `listExtensions`, `getExtension`, `createExtension`, `updateExtension`, `deleteExtension`, `getExtensionBySourceUrl`.
+- [x] 2.4 Define extension TypeScript types at `app/src/lib/extensions/types.ts` — `StacExtension` interface (id, name, prefix, version, description, schema, source, sourceUrl, createdAt, updatedAt), `ExtensionFormData`, `ExtensionPropertyForm`.
+- [x] 2.5 Create extension Zod schemas at `app/src/lib/extensions/schemas.ts` — `extensionFormSchema`, `extensionPropertySchema`. Include `formToExtensionSchema()` and `extensionToForm()` conversion functions.
+- [x] 2.6 Create CRUD API routes: `app/src/pages/api/extensions/index.ts` (GET list, POST create) and `app/src/pages/api/extensions/[id].ts` (GET one, PUT update, DELETE). Validate bodies with Zod.
+- [x] 2.7 Create extension schema hosting route at `app/src/pages/api/extensions/[id]/schema.ts`. Serve JSON Schema with `Content-Type: application/schema+json`. Set `$id` to request URL.
+- [x] 2.8 Create external extension import route at `app/src/pages/api/extensions/import.ts`. POST with `{ url }`, fetch remote JSON Schema, extract metadata, store as `source: "external"`. Deduplicate by `source_url`.
+- [x] 2.9 Create client-side API functions at `app/src/lib/extensions/api.ts` and TanStack Query hooks at `app/src/lib/extensions/queries.ts`. Add `extensionKeys` factory to `app/src/lib/query/keys.ts`.
+- [x] 2.10 Write unit tests: `app/src/__tests__/extensions-schemas.test.ts` (Zod validation, `formToExtensionSchema()` output, round-trip). Storage tests with mocked pg at `app/src/__tests__/extensions-storage.test.ts`.
 
 ## Phase 3 — Extension Management UI
 
