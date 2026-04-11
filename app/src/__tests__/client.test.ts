@@ -19,6 +19,9 @@ vi.mock("@/stores/endpointStore", () => ({
   get $activeEndpoint() {
     return $mockActiveEndpoint;
   },
+  get $endpoints() {
+    return $endpoints;
+  },
 }));
 
 function jsonResponse(data: unknown, status = 200, statusText = "OK") {

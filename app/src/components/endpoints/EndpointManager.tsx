@@ -60,7 +60,17 @@ function EndpointCard({
     setTesting(true);
     setStatus("idle");
     try {
-      const res = await fetch(endpoint.url.replace(/\/+$/, "") + "/");
+      const testUrl = endpoint.url.replace(/\/+$/, "") + "/";
+      const fetchUrl = endpoint.proxy ? "/api/proxy" : testUrl;
+      const fetchOptions: RequestInit = endpoint.proxy
+        ? {
+            headers: {
+              "X-Proxy-Target": testUrl,
+              "X-Proxy-Endpoint": endpoint.url,
+            },
+          }
+        : {};
+      const res = await fetch(fetchUrl, fetchOptions);
       if (res.ok) {
         setStatus("ok");
         toast.success(`Connected to ${endpoint.name}`);
@@ -82,6 +92,7 @@ function EndpointCard({
           <div className="flex items-center gap-2">
             <CardTitle className="text-base">{endpoint.name}</CardTitle>
             {isActive && <Badge variant="default">Active</Badge>}
+            {endpoint.proxy && <Badge variant="secondary">Proxied</Badge>}
           </div>
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit endpoint">
@@ -126,12 +137,12 @@ function EndpointManagerInner() {
   const [editing, setEditing] = useState<StacEndpoint | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<StacEndpoint | null>(null);
 
-  const handleAdd = (data: { name: string; url: string }) => {
+  const handleAdd = (data: { name: string; url: string; proxy: boolean }) => {
     addEndpoint({ ...data, isDefault: endpoints.length === 0 });
     toast.success(`Added endpoint: ${data.name}`);
   };
 
-  const handleEdit = (data: { name: string; url: string }) => {
+  const handleEdit = (data: { name: string; url: string; proxy: boolean }) => {
     if (!editing) return;
     updateEndpoint(editing.id, data);
     toast.success(`Updated endpoint: ${data.name}`);

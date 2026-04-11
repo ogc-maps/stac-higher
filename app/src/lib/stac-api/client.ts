@@ -1,4 +1,5 @@
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeEndpoint, $endpoints } from "@/stores/endpointStore";
+import type { StacEndpoint } from "@/stores/endpointStore";
 import { StacApiError } from "./types";
 
 interface FetchOptions {
@@ -15,13 +16,28 @@ function getBaseUrl(overrideUrl?: string): string {
   return endpoint.url.replace(/\/+$/, "");
 }
 
+function getEndpointForUrl(url: string): StacEndpoint | undefined {
+  const normalized = url.replace(/\/+$/, "");
+  return $endpoints.get().find((e) => normalized.startsWith(e.url.replace(/\/+$/, "")));
+}
+
+function shouldProxy(endpointUrl?: string): { proxy: boolean; endpointBase: string } {
+  if (endpointUrl) {
+    const ep = getEndpointForUrl(endpointUrl);
+    return { proxy: ep?.proxy === true, endpointBase: ep?.url ?? endpointUrl };
+  }
+  const ep = $activeEndpoint.get();
+  return { proxy: ep?.proxy === true, endpointBase: ep?.url ?? "" };
+}
+
 export async function stacFetch<T>(
   path: string,
   options: FetchOptions = {},
 ): Promise<T> {
   const { method = "GET", body, signal, endpointUrl } = options;
   const baseUrl = getBaseUrl(endpointUrl);
-  const url = `${baseUrl}${path}`;
+  const targetUrl = `${baseUrl}${path}`;
+  const { proxy, endpointBase } = shouldProxy(endpointUrl);
 
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -31,7 +47,16 @@ export async function stacFetch<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(url, {
+  let fetchUrl: string;
+  if (proxy) {
+    fetchUrl = "/api/proxy";
+    headers["X-Proxy-Target"] = targetUrl;
+    headers["X-Proxy-Endpoint"] = endpointBase;
+  } else {
+    fetchUrl = targetUrl;
+  }
+
+  const response = await fetch(fetchUrl, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

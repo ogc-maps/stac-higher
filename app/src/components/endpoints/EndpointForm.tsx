@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -14,7 +15,7 @@ import type { StacEndpoint } from "@/stores/endpointStore";
 interface EndpointFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (data: { name: string; url: string }) => void;
+  onSubmit: (data: { name: string; url: string; proxy: boolean }) => void;
   initial?: StacEndpoint;
 }
 
@@ -26,14 +27,16 @@ export function EndpointForm({
 }: EndpointFormProps) {
   const [name, setName] = useState(initial?.name ?? "");
   const [url, setUrl] = useState(initial?.url ?? "");
+  const [proxy, setProxy] = useState(initial?.proxy ?? false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !url.trim()) return;
-    onSubmit({ name: name.trim(), url: url.trim().replace(/\/+$/, "") });
+    onSubmit({ name: name.trim(), url: url.trim().replace(/\/+$/, ""), proxy });
     if (!initial) {
       setName("");
       setUrl("");
+      setProxy(false);
     }
     onOpenChange(false);
   };
@@ -66,6 +69,21 @@ export function EndpointForm({
               onChange={(e) => setUrl(e.target.value)}
               required
               type="url"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-md border p-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="ep-proxy" className="text-sm font-medium">
+                Proxy through server
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Route requests through the server to bypass CORS restrictions
+              </p>
+            </div>
+            <Switch
+              id="ep-proxy"
+              checked={proxy}
+              onCheckedChange={setProxy}
             />
           </div>
           <DialogFooter>

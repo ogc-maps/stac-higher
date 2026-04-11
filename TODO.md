@@ -43,12 +43,12 @@ Tasks for agent loop iteration. Pick the top unchecked item, implement it, run `
 
 ## Phase 1 — CORS Proxy
 
-- [ ] 1.1 Add `proxy?: boolean` field to `StacEndpoint` interface in `app/src/stores/endpointStore.ts`. Optional for backward compatibility with existing localStorage data.
-- [ ] 1.2 Create server-side proxy API route at `app/src/pages/api/proxy.ts`. Export `ALL` handler. Read target URL from `X-Proxy-Target` header, validate URL is HTTP(S) and starts with `X-Proxy-Endpoint` base. Forward method/headers/body. Return upstream response. 400 if missing header, 403 if invalid URL.
-- [ ] 1.3 Update `stacFetch()` in `app/src/lib/stac-api/client.ts` to route through proxy when active endpoint has `proxy: true`. Rewrite fetch to `/api/proxy` with `X-Proxy-Target`/`X-Proxy-Endpoint` headers. Add `getEndpointForUrl()` helper.
-- [ ] 1.4 Add proxy toggle to endpoint form UI. Modify `app/src/components/endpoints/EndpointForm.tsx` (add Switch below URL field: "Proxy through server"). Modify `app/src/components/endpoints/EndpointManager.tsx` (show "Proxied" badge on cards, update `testConnection` to use proxy when enabled).
-- [ ] 1.5 Write unit tests for proxy route at `app/src/__tests__/proxy.test.ts`. Test: missing header → 400, non-http scheme → 403, GET forwarding, POST with body, response status/headers forwarded.
-- [ ] 1.6 Write E2E test for proxy flow at `app/e2e/proxy.spec.ts`. Add endpoint with proxy enabled, verify badge, test connection through proxy.
+- [x] 1.1 Add `proxy?: boolean` field to `StacEndpoint` interface in `app/src/stores/endpointStore.ts`. Optional for backward compatibility with existing localStorage data.
+- [x] 1.2 Create server-side proxy API route at `app/src/pages/api/proxy.ts`. Export `ALL` handler. Read target URL from `X-Proxy-Target` header, validate URL is HTTP(S) and starts with `X-Proxy-Endpoint` base. Forward method/headers/body. Return upstream response. 400 if missing header, 403 if invalid URL.
+- [x] 1.3 Update `stacFetch()` in `app/src/lib/stac-api/client.ts` to route through proxy when active endpoint has `proxy: true`. Rewrite fetch to `/api/proxy` with `X-Proxy-Target`/`X-Proxy-Endpoint` headers. Add `getEndpointForUrl()` helper.
+- [x] 1.4 Add proxy toggle to endpoint form UI. Modify `app/src/components/endpoints/EndpointForm.tsx` (add Switch below URL field: "Proxy through server"). Modify `app/src/components/endpoints/EndpointManager.tsx` (show "Proxied" badge on cards, update `testConnection` to use proxy when enabled).
+- [x] 1.5 Write unit tests for proxy route at `app/src/__tests__/proxy.test.ts`. Test: missing header → 400, non-http scheme → 403, GET forwarding, POST with body, response status/headers forwarded.
+- [x] 1.6 Write E2E test for proxy flow at `app/e2e/proxy.spec.ts`. Add endpoint with proxy enabled, verify badge, test connection through proxy.
 
 ## Phase 2 — Database Layer + Extension Infrastructure
 

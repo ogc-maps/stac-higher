@@ -6,6 +6,7 @@ export interface StacEndpoint {
   name: string;
   url: string;
   isDefault: boolean;
+  proxy?: boolean;
 }
 
 export const $endpoints = persistentAtom<StacEndpoint[]>(
