@@ -9,9 +9,13 @@ This is an npm-workspaces monorepo:
 - `app/` — the Astro + React STAC client
 - `packages/shared/` — `@stac-higher/shared` package: reusable components, hooks, types, stores, RJSF theme, and Storybook
 
-The app imports from `@stac-higher/shared` (the package's public barrel at `packages/shared/src/index.ts`). Most `app/src/lib/` and `app/src/stores/` files are thin re-export proxies that re-export from `@stac-higher/shared`, so existing app imports like `@/lib/utils` and `@/stores/mapStore` still work unchanged.
+The app imports from `@stac-higher/shared` (the package's public barrel at `packages/shared/src/index.ts`). Most `app/src/lib/` and `app/src/stores/` files are thin re-export proxies that re-export from `@stac-higher/shared`, so existing app imports like `@/lib/utils` and `@/stores/mapStore` still work unchanged. **Shared components are the source of truth** — UI primitives (Button, Card, Badge, Input, Label, Select, Skeleton, Switch, Textarea, Tooltip), the `shared/*` utilities (BboxInput, EmptyState, ErrorBoundary, ErrorState, JsonViewer, LoadingState), layout (ThemeToggle), collection/item cards, all `map/` components (StacMap, DrawingToolbar, FootprintLayer, ExtentLayer), and the RJSF theme (`shadcnTheme` and its widgets/templates) all live in `packages/shared/` and are imported from `@stac-higher/shared`. App-only shadcn primitives (dialog, dropdown-menu, popover, separator, sheet, sonner, table, tabs) remain in `app/src/components/ui/`.
 
-Run `npm install` at the **repo root** — not `app/` — to wire workspace symlinks.
+Run `npm install` at the **repo root** — not `app/` — to wire workspace symlinks. There is a single lockfile at the root.
+
+### Path aliases
+- `@/*` → `app/src/*` (app-local, set in `app/tsconfig.json` and `app/astro.config.mjs`)
+- `@shared/*` → `packages/shared/src/*` (used *inside* `packages/shared` only; app code should import from `@stac-higher/shared` instead)
 
 ## Commands
 
@@ -56,25 +60,25 @@ Astro pages (`src/pages/*.astro`) are thin routing shells. Each mounts a single 
 Layout.astro (HTML shell, theme script)
   └── <PageComponent client:only="react" />
         ├── QueryProvider (TanStack Query + Toaster)
-        ├── Header (nav, EndpointSelector, ThemeToggle)
+        ├── Header (nav, CatalogSelector, ThemeToggle)
         └── Page content (forms, maps, tables)
 ```
 
 ### Three-Tier State
 
-1. **Nanostores** — cross-island persistent state (endpoint selection, theme). Module-level atoms shared across all React trees that import them. Persisted to localStorage via `@nanostores/persistent`.
+1. **Nanostores** — cross-island persistent state (catalog selection, theme). Module-level atoms shared across all React trees that import them. Persisted to localStorage via `@nanostores/persistent`. Catalog state lives in `app/src/stores/catalogStore.ts` (`$catalogs`, `$activeCatalogId`, `$activeCatalog` computed).
 
-2. **TanStack Query** — server state. Query keys include the endpoint URL (`["stac", endpointUrl, "collections", ...]`), so switching endpoints automatically invalidates all cached data.
+2. **TanStack Query** — server state. Query keys include the catalog URL (`["stac", catalogUrl, "collections", ...]`), so switching catalogs automatically invalidates all cached data.
 
 3. **React Hook Form + Zod** — form state. Schemas in `src/lib/stac-api/schemas.ts`. Forms use `useFieldArray` for repeatable sections (providers, assets, properties). The resolver uses `as any` cast due to Zod v4 type inference issues with `zodResolver`.
 
 ### Data Flow
 
 ```
-useStore($activeEndpoint)  →  endpoint URL
+useStore($activeCatalog)  →  catalog URL
   → TanStack Query hook (useCollections, useItem, etc.)
     → API function (src/lib/stac-api/*.ts)
-      → stacFetch() reads $activeEndpoint for base URL
+      → stacFetch() reads $activeCatalog for base URL
         → fetch() to STAC API
 ```
 
@@ -96,15 +100,15 @@ All CRUD forms follow: Zod schema → `useForm()` with `zodResolver` → convers
 
 ## Key Conventions
 
-- **Path alias**: `@/*` maps to `src/*` (configured in tsconfig.json)
-- **UI components**: shadcn/ui (Radix primitives + Tailwind) in `src/components/ui/`
-- **Theme**: Dark by default. `Layout.astro` has a `<script>` that applies the theme class before hydration to prevent flash. Toggle via `toggleTheme()` from `uiStore`.
-- **STAC API types**: Full TypeScript interfaces in `src/lib/stac-api/types.ts`. `StacApiError` class for typed error handling.
+- **Path alias**: `@/*` maps to `app/src/*` (configured in `app/tsconfig.json`). Import shared code from `@stac-higher/shared`.
+- **UI components**: shadcn/ui (Radix primitives + Tailwind). Shared primitives live in `packages/shared/src/components/ui/` and are imported from `@stac-higher/shared`. App-only primitives (dialog, dropdown-menu, popover, separator, sheet, sonner, table, tabs) live in `app/src/components/ui/`.
+- **Theme**: Dark by default. `Layout.astro` has a `<script>` that applies the theme class before hydration to prevent flash. Toggle via `toggleTheme()` from `@stac-higher/shared`.
+- **STAC API types**: Full TypeScript interfaces in `packages/shared/src/lib/stac-api/types.ts` (app proxy at `app/src/lib/stac-api/types.ts` re-exports from `@stac-higher/shared`). `StacApiError` class for typed error handling.
 - **Query key factory**: `src/lib/query/keys.ts` — hierarchical keys enable precise cache invalidation on mutations.
 
 ## Backend
 
-docker-compose runs pgstac (PostgreSQL + PostGIS) and stac-fastapi-pgstac with the Transaction extension enabled (full CRUD). API at `http://localhost:8082`. Users configure endpoint URLs in the UI (persisted to localStorage).
+docker-compose runs pgstac (PostgreSQL + PostGIS) and stac-fastapi-pgstac with the Transaction extension enabled (full CRUD). API at `http://localhost:8082`. Users configure catalogs (STAC API URLs) in the `/catalogs` page (persisted to localStorage).
 
 The same PostgreSQL instance (port 5433) is also used by the Astro app itself for extension storage. Set `DATABASE_URL` env var to override the default connection string (`postgresql://username:password@localhost:5433/postgis`). Migrations run automatically on the first API request via Astro middleware.
 
@@ -163,19 +167,20 @@ Before writing code, read the files the task references. Understand the existing
 ### 3. Implement
 All source code lives under `app/src/`. Key locations:
 - Pages (Astro routing shells): `app/src/pages/`
-- React components: `app/src/components/{collections,items,map,search,shared,layout,endpoints}/`
-- Extension UI: `app/src/components/extensions/` — list, detail, form, picker, dynamic fields (`ExtensionFields`), import dialog, RJSF theme (`rjsf-theme/`)
+- React components: `app/src/components/{collections,items,catalogs,extensions,search,layout}/` (app-specific). Shared components live in `packages/shared/src/components/{shared,layout,map,collections,items}/` and are imported from `@stac-higher/shared`.
+- Extension UI: `app/src/components/extensions/` — list, detail, form, picker, dynamic fields (`ExtensionFields`), import dialog. RJSF theme lives in `packages/shared/src/components/extensions/rjsf-theme/` and is imported from `@stac-higher/shared`.
 - Extension pages: `app/src/pages/extensions/` — index, new, `[id]/index`, `[id]/edit`
-- API client + types: `app/src/lib/stac-api/`
+- Catalog pages: `app/src/pages/catalogs.astro`
+- API client + types: `app/src/lib/stac-api/` (types are proxies to `@stac-higher/shared`)
 - Query hooks: `app/src/lib/query/`
-- Map utilities: `app/src/lib/map/`
-- State stores: `app/src/stores/`
-- UI primitives: `app/src/components/ui/` (shadcn — do not edit these by hand)
+- Map utilities: `packages/shared/src/lib/map/` (proxies at `app/src/lib/map/`)
+- State stores: `app/src/stores/catalogStore.ts` (app-only). Shared stores (uiStore, mapStore) live in `packages/shared/src/stores/` with app proxies.
+- UI primitives: shared ones in `packages/shared/src/components/ui/`; app-only ones in `app/src/components/ui/` (do not edit either by hand)
 - Database layer: `app/src/lib/db/` — `connection.ts` (singleton Pool from `DATABASE_URL`), `migrate.ts` (creates `stac_higher.extensions` table)
 - Extension logic: `app/src/lib/extensions/` — `types.ts`, `schemas.ts`, `storage.ts` (CRUD via `pg`), `api.ts`, `queries.ts` (TanStack), `schema-cache.ts` (in-memory TTL cache)
 
 When creating new components, follow the existing patterns:
-- Import from `@/` path alias (maps to `app/src/`)
+- Import app-local modules via `@/*`; import shared utilities, components, stores, and UI primitives from `@stac-higher/shared`
 - Use shadcn/ui primitives for all UI elements
 - Use `lucide-react` for icons
 - Use `useStore()` from `@nanostores/react` for global state
@@ -207,6 +212,6 @@ Edit `TODO.md`: change `- [ ]` to `- [x]` for the completed task. If your work r
 - **One task per iteration.** Do not combine unrelated tasks.
 - **Do not commit to main. Do not switch branches. Stay on the `ralph/progress` branch.**
 - **Do not introduce new dependencies** without a clear need. The stack is already comprehensive.
-- **Do not modify `app/src/components/ui/`** — these are generated by shadcn. Use `npx shadcn@latest add <component>` if you need a new primitive.
+- **Do not modify shadcn primitive files by hand** — neither `packages/shared/src/components/ui/*` nor `app/src/components/ui/*`. Use `npx shadcn@latest add <component>` if you need a new primitive; place it in the shared package if the app will consume it from `@stac-higher/shared`.
 - **Do not break existing pages.** If you change a shared component, check that all pages importing it still work.
 - **Keep changes minimal and focused.** A task that says "add X to Y" means add X to Y — not refactor Y while you're there.
