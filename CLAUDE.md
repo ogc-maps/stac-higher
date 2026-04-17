@@ -2,14 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Monorepo Layout
+
+This is an npm-workspaces monorepo:
+
+- `app/` — the Astro + React STAC client
+- `packages/shared/` — `@stac-higher/shared` package: reusable components, hooks, types, stores, RJSF theme, and Storybook
+
+The app imports from `@stac-higher/shared` (the package's public barrel at `packages/shared/src/index.ts`). Most `app/src/lib/` and `app/src/stores/` files are thin re-export proxies that re-export from `@stac-higher/shared`, so existing app imports like `@/lib/utils` and `@/stores/mapStore` still work unchanged.
+
+Run `npm install` at the **repo root** — not `app/` — to wire workspace symlinks.
+
 ## Commands
 
-All commands run from `app/`:
+App commands run from `app/`:
 
 ```bash
 npm run dev        # Start Astro dev server (http://localhost:4321)
 npm run build      # Production build to app/dist/
-npm run preview    # Preview production build
+npx astro preview  # Preview production build
 npx astro check    # TypeScript type checking
 ```
 
@@ -18,12 +29,20 @@ Backend (from repo root):
 docker compose up -d   # Start pgstac + stac-fastapi on port 8082
 ```
 
-Testing:
+Testing (from `app/`):
 ```bash
 npm test              # Vitest unit tests (single run)
 npm run test:watch    # Vitest in watch mode
 npm run test:e2e      # Playwright E2E tests (auto-starts dev server)
 ```
+
+Storybook (from `packages/shared/`):
+```bash
+npm run storybook        # Component library dev server (http://localhost:6006)
+npm run build-storybook  # Build static Storybook to packages/shared/storybook-static/
+```
+
+Story files live in `packages/shared/src/**/*.stories.tsx`, co-located next to the components. Config is in `packages/shared/.storybook/`. Shared STAC fixtures are in `packages/shared/src/components/__fixtures__/stac.ts`. Map components (`StacMap`, `FootprintLayer`, `ExtentLayer`) are not yet storified — they require WebGL/MapLibre context.
 
 ## Architecture
 
@@ -87,6 +106,29 @@ All CRUD forms follow: Zod schema → `useForm()` with `zodResolver` → convers
 
 docker-compose runs pgstac (PostgreSQL + PostGIS) and stac-fastapi-pgstac with the Transaction extension enabled (full CRUD). API at `http://localhost:8082`. Users configure endpoint URLs in the UI (persisted to localStorage).
 
+The same PostgreSQL instance (port 5433) is also used by the Astro app itself for extension storage. Set `DATABASE_URL` env var to override the default connection string (`postgresql://username:password@localhost:5433/postgis`). Migrations run automatically on the first API request via Astro middleware.
+
+## API Routes (Astro server-side)
+
+| Route | Method(s) | Purpose |
+|---|---|---|
+| `/api/proxy` | ALL | CORS proxy — forwards requests using `X-Proxy-Target` + `X-Proxy-Endpoint` headers |
+| `/api/extensions` | GET, POST | List / create extensions |
+| `/api/extensions/[id]` | GET, PUT, DELETE | Get / update / delete an extension |
+| `/api/extensions/[id]/schema` | GET | Serve extension as JSON Schema (`application/schema+json`) |
+| `/api/extensions/import` | POST `{ url }` | Fetch + store an external JSON Schema as an extension |
+| `/api/extensions/preview` | POST `{ url }` | Preview external schema metadata without saving |
+| `/api/extensions/resolve-schema` | POST `{ url }` | Fetch + cache a JSON Schema (5-min TTL in-memory cache) |
+
+## Extension Data Model
+
+Extensions are stored in `stac_higher.extensions` (PostgreSQL). Key fields: `id` (UUID), `name`, `prefix`, `version`, `description`, `schema` (JSONB), `source` (`local` or `external`), `source_url`.
+
+When a user attaches an extension to a collection or item form:
+- Its schema URL is added to `stac_extensions`
+- `ExtensionFields` fetches the schema and renders RJSF fields
+- On save: extension properties merge into `item.properties` (items) or `collection.summaries` (collections)
+
 ## Automated Guardrails
 
 Hooks are configured in `.claude/settings.json` (committed, shared):
@@ -122,11 +164,15 @@ Before writing code, read the files the task references. Understand the existing
 All source code lives under `app/src/`. Key locations:
 - Pages (Astro routing shells): `app/src/pages/`
 - React components: `app/src/components/{collections,items,map,search,shared,layout,endpoints}/`
+- Extension UI: `app/src/components/extensions/` — list, detail, form, picker, dynamic fields (`ExtensionFields`), import dialog, RJSF theme (`rjsf-theme/`)
+- Extension pages: `app/src/pages/extensions/` — index, new, `[id]/index`, `[id]/edit`
 - API client + types: `app/src/lib/stac-api/`
 - Query hooks: `app/src/lib/query/`
 - Map utilities: `app/src/lib/map/`
 - State stores: `app/src/stores/`
 - UI primitives: `app/src/components/ui/` (shadcn — do not edit these by hand)
+- Database layer: `app/src/lib/db/` — `connection.ts` (singleton Pool from `DATABASE_URL`), `migrate.ts` (creates `stac_higher.extensions` table)
+- Extension logic: `app/src/lib/extensions/` — `types.ts`, `schemas.ts`, `storage.ts` (CRUD via `pg`), `api.ts`, `queries.ts` (TanStack), `schema-cache.ts` (in-memory TTL cache)
 
 When creating new components, follow the existing patterns:
 - Import from `@/` path alias (maps to `app/src/`)
@@ -159,7 +205,7 @@ Edit `TODO.md`: change `- [ ]` to `- [x]` for the completed task. If your work r
 
 ### Rules
 - **One task per iteration.** Do not combine unrelated tasks.
-- **Do not commit to main. Dont switch branches. stay on the ralph/progress branch
+- **Do not commit to main. Do not switch branches. Stay on the `ralph/progress` branch.**
 - **Do not introduce new dependencies** without a clear need. The stack is already comprehensive.
 - **Do not modify `app/src/components/ui/`** — these are generated by shadcn. Use `npx shadcn@latest add <component>` if you need a new primitive.
 - **Do not break existing pages.** If you change a shared component, check that all pages importing it still work.
