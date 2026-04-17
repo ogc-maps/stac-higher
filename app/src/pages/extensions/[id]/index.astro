@@ -1,0 +1,10 @@
+---
+import Layout from "../../../layouts/Layout.astro";
+import { ExtensionDetailPage } from "../../../components/extensions/ExtensionDetail";
+
+const { id } = Astro.params;
+---
+
+<Layout title={`Extension: ${id}`}>
+  <ExtensionDetailPage client:only="react" extensionId={id!} />
+</Layout>

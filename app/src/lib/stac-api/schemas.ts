@@ -53,6 +53,8 @@ export const collectionFormSchema = z.object({
     )
     .optional(),
   links: z.array(stacLinkSchema).optional(),
+  stac_extensions: z.array(z.string()).optional(),
+  extension_properties: z.record(z.string(), z.any()).optional(),
 });
 
 export type CollectionFormData = z.infer<typeof collectionFormSchema>;
@@ -86,6 +88,8 @@ export const itemFormSchema = z.object({
       }),
     )
     .optional(),
+  stac_extensions: z.array(z.string()).optional(),
+  extension_properties: z.record(z.string(), z.any()).optional(),
 });
 
 export type ItemFormData = z.infer<typeof itemFormSchema>;

@@ -1,0 +1,8 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { ExtensionListPage } from "../../components/extensions/ExtensionList";
+---
+
+<Layout title="Extensions">
+  <ExtensionListPage client:only="react" />
+</Layout>

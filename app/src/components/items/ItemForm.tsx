@@ -1,7 +1,7 @@
 import { useForm, useFieldArray, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useCreateItem, useUpdateItem } from "@/lib/query/items";
 import { itemFormSchema, type ItemFormData } from "@/lib/stac-api/schemas";
 import type { StacItem } from "@/lib/stac-api/types";
@@ -9,20 +9,23 @@ import { geometryToBbox } from "@/lib/map/bbox";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
 import { ItemGeometryEditor } from "./ItemGeometryEditor";
-import { JsonViewer } from "@/components/shared/JsonViewer";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { JsonViewer } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Input } from "@stac-higher/shared";
+import { Label } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { ArrowLeft, Plus, Trash2, Save } from "lucide-react";
+} from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
+import { ExtensionPicker } from "@/components/extensions/ExtensionPicker";
+import { ExtensionFields } from "@/components/extensions/ExtensionFields";
+import { Plus, Trash2, Save, X } from "lucide-react";
 import { toast } from "sonner";
 
-function formToStacItem(
+export function formToStacItem(
   data: ItemFormData,
   collectionId: string,
   stacVersion = "1.0.0",
@@ -43,6 +46,14 @@ function formToStacItem(
     }
   });
 
+  // Merge extension_properties (keyed by schema URL) into item properties
+  const extProps: Record<string, unknown> = {};
+  Object.values(data.extension_properties ?? {}).forEach((props) => {
+    if (props && typeof props === "object") {
+      Object.assign(extProps, props);
+    }
+  });
+
   const bbox = data.geometry ? geometryToBbox(data.geometry) : undefined;
 
   return {
@@ -54,14 +65,16 @@ function formToStacItem(
     properties: {
       datetime: data.datetime ? new Date(data.datetime).toISOString() : null,
       ...additionalProps,
+      ...extProps,
     },
     links: [],
     assets,
     collection: collectionId,
+    stac_extensions: data.stac_extensions?.length ? data.stac_extensions : undefined,
   };
 }
 
-function stacItemToForm(item: StacItem): ItemFormData {
+export function stacItemToForm(item: StacItem): ItemFormData {
   const { datetime, start_datetime, end_datetime, ...rest } = item.properties;
 
   const dtValue = datetime
@@ -86,6 +99,12 @@ function stacItemToForm(item: StacItem): ItemFormData {
       key,
       asset,
     })),
+    stac_extensions: item.stac_extensions ?? [],
+    // Seed each extension schema URL with the full item.properties so RJSF
+    // can display the correct values (it renders only keys defined in the schema)
+    extension_properties: Object.fromEntries(
+      (item.stac_extensions ?? []).map((url) => [url, item.properties]),
+    ),
   };
 }
 
@@ -95,8 +114,8 @@ interface ItemFormInnerProps {
 }
 
 function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const isEdit = !!existingItem;
 
   const createMutation = useCreateItem(endpointUrl, collectionId);
@@ -119,6 +138,7 @@ function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
     register,
     handleSubmit,
     watch,
+    setValue,
     control,
     formState: { errors, isSubmitting },
   } = form;
@@ -370,6 +390,54 @@ function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
                 ))}
               </CardContent>
             </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Extensions</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <ExtensionPicker
+                  value={watchAll.stac_extensions ?? []}
+                  onChange={(urls) => setValue("stac_extensions", urls)}
+                />
+                {(watchAll.stac_extensions ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {(watchAll.stac_extensions ?? []).map((url) => (
+                      <Badge
+                        key={url}
+                        variant="secondary"
+                        className="text-xs font-mono max-w-xs truncate gap-1 pr-1"
+                      >
+                        <span className="truncate">{url}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setValue(
+                              "stac_extensions",
+                              (watchAll.stac_extensions ?? []).filter(
+                                (u) => u !== url,
+                              ),
+                            )
+                          }
+                          className="ml-0.5 shrink-0 rounded-full hover:bg-muted-foreground/20"
+                          aria-label="Remove extension"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {(watchAll.stac_extensions ?? []).length > 0 && (
+              <ExtensionFields
+                schemaUrls={watchAll.stac_extensions ?? []}
+                value={watchAll.extension_properties ?? {}}
+                onChange={(data) => setValue("extension_properties", data)}
+              />
+            )}
 
             <div className="flex items-center gap-3">
               <Button type="submit" disabled={isSubmitting}>

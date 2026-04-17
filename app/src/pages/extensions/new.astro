@@ -1,0 +1,8 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { ExtensionFormPage } from "../../components/extensions/ExtensionForm";
+---
+
+<Layout title="Create Extension">
+  <ExtensionFormPage client:only="react" />
+</Layout>
