@@ -1,0 +1,108 @@
+"""Queue interface contract, exercised through the in-memory backend."""
+
+import pytest
+
+from pipeline.queue.interface import QueueConnectionError, QueueError
+from pipeline.queue.memory import InMemoryQueue
+
+
+@pytest.fixture
+def queue() -> InMemoryQueue:
+    return InMemoryQueue()
+
+
+async def test_register_and_run_task(queue: InMemoryQueue):
+    seen: list[dict] = []
+
+    async def handler(**payload):
+        seen.append(payload)
+
+    queue.register_task(handler, name="jobs.test")
+    job_id = await queue.enqueue("jobs.test", {"path": "/a", "size": 1})
+    assert job_id == "1"
+
+    ran = await queue.run_pending()
+    assert ran == 1
+    assert seen == [{"path": "/a", "size": 1}]
+    assert queue.jobs[0].status == "done"
+
+
+async def test_sync_handler_supported(queue: InMemoryQueue):
+    seen = []
+    queue.register_task(lambda **kw: seen.append(kw), name="jobs.sync")
+    await queue.enqueue("jobs.sync", {"n": 1})
+    await queue.run_pending()
+    assert seen == [{"n": 1}]
+
+
+async def test_enqueue_without_payload(queue: InMemoryQueue):
+    seen = []
+    queue.register_task(lambda **kw: seen.append(kw), name="jobs.bare")
+    await queue.enqueue("jobs.bare")
+    await queue.run_pending()
+    assert seen == [{}]
+
+
+async def test_enqueue_batch(queue: InMemoryQueue):
+    seen = []
+    queue.register_task(lambda **kw: seen.append(kw), name="jobs.batch")
+    ids = await queue.enqueue_batch("jobs.batch", [{"i": 0}, {"i": 1}, {"i": 2}])
+    assert len(ids) == len(set(ids)) == 3
+
+    await queue.run_pending()
+    assert seen == [{"i": 0}, {"i": 1}, {"i": 2}]
+
+
+async def test_enqueue_batch_empty(queue: InMemoryQueue):
+    queue.register_task(lambda **kw: None, name="jobs.batch")
+    assert await queue.enqueue_batch("jobs.batch", []) == []
+
+
+async def test_enqueue_unknown_task_fails(queue: InMemoryQueue):
+    with pytest.raises(QueueError):
+        await queue.enqueue("jobs.nope", {})
+
+
+async def test_duplicate_registration_fails(queue: InMemoryQueue):
+    queue.register_task(lambda **kw: None, name="jobs.dup")
+    with pytest.raises(QueueError):
+        queue.register_task(lambda **kw: None, name="jobs.dup")
+    with pytest.raises(QueueError):
+        queue.register_periodic(lambda timestamp: None, name="jobs.dup", cron="* * * * *")
+
+
+async def test_periodic_registration_and_tick(queue: InMemoryQueue):
+    ticks: list[int] = []
+
+    async def periodic(timestamp: int):
+        ticks.append(timestamp)
+
+    queue.register_periodic(periodic, name="jobs.tick", cron="*/5 * * * *")
+    assert queue.periodic["jobs.tick"].cron == "*/5 * * * *"
+
+    await queue.run_periodic("jobs.tick", timestamp=1_700_000_000)
+    assert ticks == [1_700_000_000]
+
+
+async def test_failed_job_marked_failed(queue: InMemoryQueue):
+    def boom(**kw):
+        raise RuntimeError("boom")
+
+    queue.register_task(boom, name="jobs.boom")
+    await queue.enqueue("jobs.boom")
+    with pytest.raises(RuntimeError):
+        await queue.run_pending()
+    assert queue.jobs[0].status == "failed"
+
+
+async def test_check_connection(queue: InMemoryQueue):
+    await queue.check_connection()  # connected by default
+    queue.connected = False
+    with pytest.raises(QueueConnectionError):
+        await queue.check_connection()
+
+
+async def test_setup_idempotent(queue: InMemoryQueue):
+    await queue.setup()
+    await queue.setup()
+    assert queue.is_set_up
