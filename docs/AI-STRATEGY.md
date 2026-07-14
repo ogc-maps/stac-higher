@@ -3,7 +3,7 @@
 This repo works with any AI coding agent (Claude Code, Codex, OpenCode, Cursor,
 Copilot, …). Instead of per-harness instruction files, we standardize on two
 open formats and keep the per-harness footprint to the minimum shim each tool
-requires. (Pattern adopted from the map-traverse repo, 2026-07.)
+requires. 
 
 ## The two standards
 
