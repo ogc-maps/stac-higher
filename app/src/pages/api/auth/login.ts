@@ -21,8 +21,25 @@ import {
 const TXN_MAX_AGE_S = 10 * 60;
 
 export function sanitizeReturnTo(raw: string | null): string {
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
-  return raw;
+  // Same-origin paths only. Browsers normalize backslashes to slashes for
+  // http(s) URLs, so "/\evil.com" resolves like "//evil.com" (CWE-601) —
+  // parse against a sentinel base and require the origin to be unchanged.
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\")) {
+    return "/";
+  }
+  try {
+    const parsed = new URL(raw, "http://placeholder.invalid");
+    if (parsed.origin !== "http://placeholder.invalid") return "/";
+    const out = parsed.pathname + parsed.search + parsed.hash;
+    // dot-segment removal can mint a new scheme-relative shape
+    // ("/..//evil.com" → pathname "//evil.com") — re-check the output
+    if (!out.startsWith("/") || out.startsWith("//") || out.includes("\\")) {
+      return "/";
+    }
+    return out;
+  } catch {
+    return "/";
+  }
 }
 
 export const GET: APIRoute = async ({ url, cookies, redirect }) => {
