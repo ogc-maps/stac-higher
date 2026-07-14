@@ -102,8 +102,12 @@ test.describe("Dynamic extension forms", () => {
       .last()
       .scrollIntoViewIfNeeded();
 
-    // Open the extension picker
-    await page.getByRole("combobox").click();
+    // Open the extension picker (the header's catalog selector is also a
+    // combobox now that the built-in catalog always exists — disambiguate)
+    await page
+      .getByRole("combobox")
+      .filter({ hasText: /select extensions|extensions? selected/i })
+      .click();
 
     // Wait for the picker dropdown to show our extension
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
@@ -136,8 +140,12 @@ test.describe("Dynamic extension forms", () => {
 
     await page.goto("/collections/test-collection/items/new");
 
-    // Open the extension picker
-    await page.getByRole("combobox").click();
+    // Open the extension picker (the header's catalog selector is also a
+    // combobox now that the built-in catalog always exists — disambiguate)
+    await page
+      .getByRole("combobox")
+      .filter({ hasText: /select extensions|extensions? selected/i })
+      .click();
 
     // Our extension should appear with correct prefix badge
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
@@ -241,8 +249,11 @@ test.describe("Dynamic extension forms", () => {
 
     await page.goto("/collections/test-collection/items/new");
 
-    // Open picker and select
-    await page.getByRole("combobox").click();
+    // Open picker and select (filter: the header catalog selector is also a combobox)
+    await page
+      .getByRole("combobox")
+      .filter({ hasText: /select extensions|extensions? selected/i })
+      .click();
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
     await page.getByText(TEST_EXT_NAME).click();
     await page.keyboard.press("Escape");

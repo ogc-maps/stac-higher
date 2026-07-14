@@ -88,7 +88,7 @@ function CatalogCard({
   };
 
   return (
-    <Card className={isActive ? "border-primary" : ""}>
+    <Card className={isActive ? "border-primary" : ""} data-testid={`catalog-card-${catalog.id}`}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
