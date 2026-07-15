@@ -1,0 +1,64 @@
+# Throwaway protocol servers for exercising the pipeline connection adapters
+# end-to-end (SFTP / FTP / FTPS). S3 is covered by the existing `minio` service
+# in docker-compose.yml — no server is added here for it.
+#
+# These are for LOCAL INTEGRATION ONLY. Do not use in any deployed environment:
+# the credentials are hard-coded and the FTPS cert is self-signed.
+#
+# Run alongside the main stack so they share its default network (adapters
+# resolve the hostnames below, and EGRESS_ALLOW_HOSTS already lists them):
+#
+#   docker compose -f docker-compose.yml -f infra/compose.test-servers.yml up -d
+#
+# Connection config to point a `connections` row at each (host = service name):
+#
+#   | protocol | host       | port | root_path | username | password |
+#   |----------|------------|------|-----------|----------|----------|
+#   | sftp/ssh | sftp-test  | 22   | /upload   | demo     | demo     |
+#   | ftp      | ftp-test   | 21   | /         | demo     | demo     |
+#   | ftps     | ftps-test  | 21   | /         | demo     | demo     |  (explicit TLS; implicit=false)
+#
+# The pipeline's egress policy blocks private/compose-internal addresses by
+# default; these hostnames are permitted via EGRESS_ALLOW_HOSTS
+# (default in docker-compose.yml: minio,sftp-test,ftp-test,ftps-test).
+
+services:
+  # OpenSSH-based SFTP server. The trailing command arg creates user `demo`
+  # (password `demo`) with an `upload` directory, so root_path=/upload works.
+  sftp-test:
+    image: atmoz/sftp:alpine
+    command: demo:demo:::upload
+    ports:
+      - "2222:22" # host-side convenience; adapters use the in-network :22
+    restart: "no"
+
+  # Plain FTP (vsftpd) with passive mode. No TLS.
+  ftp-test:
+    image: fauria/vsftpd:latest
+    environment:
+      - FTP_USER=demo
+      - FTP_PASS=demo
+      - PASV_ADDRESS=ftp-test
+      - PASV_MIN_PORT=21100
+      - PASV_MAX_PORT=21110
+    ports:
+      - "2121:21"
+      - "21100-21110:21100-21110"
+    restart: "no"
+
+  # FTPS (vsftpd with a self-signed cert) — explicit TLS (AUTH TLS). Point an
+  # `ftps` connection here with config.implicit=false.
+  ftps-test:
+    image: fauria/vsftpd:latest
+    environment:
+      - FTP_USER=demo
+      - FTP_PASS=demo
+      - PASV_ADDRESS=ftps-test
+      - PASV_MIN_PORT=21200
+      - PASV_MAX_PORT=21210
+      - SSL_ENABLE=YES
+      - SSL_TLS_FORCE=YES
+    ports:
+      - "2130:21"
+      - "21200-21210:21200-21210"
+    restart: "no"

@@ -9,6 +9,10 @@ dependencies = [
     "procrastinate>=3.0,<4",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "cryptography>=49.0.0",
+    "asyncssh>=2.24.0",
+    "aioftp>=0.27.2",
+    "boto3>=1.43.49",
 ]
 
 [project.optional-dependencies]

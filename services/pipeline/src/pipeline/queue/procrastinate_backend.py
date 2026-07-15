@@ -69,9 +69,7 @@ class ProcrastinateQueue(QueueBackend):
         if not payloads:
             return []
         await self._ensure_open()
-        job_ids = await self.app.tasks[job_name].batch_defer_async(
-            *[dict(p) for p in payloads]
-        )
+        job_ids = await self.app.tasks[job_name].batch_defer_async(*[dict(p) for p in payloads])
         return [str(job_id) for job_id in job_ids]
 
     async def setup(self) -> None:
@@ -95,9 +93,7 @@ class ProcrastinateQueue(QueueBackend):
             raise QueueConnectionError(f"cannot reach queue database: {exc}") from exc
 
         if already_applied:
-            logger.info(
-                "procrastinate schema already applied", extra={"schema": self.schema}
-            )
+            logger.info("procrastinate schema already applied", extra={"schema": self.schema})
             return
 
         await self._ensure_open()

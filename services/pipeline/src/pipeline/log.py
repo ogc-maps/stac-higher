@@ -8,9 +8,11 @@ import sys
 from datetime import UTC, datetime
 
 # Attributes present on every LogRecord; anything else was passed via `extra=`.
-_STANDARD_ATTRS = frozenset(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
-) | {"message", "asctime", "taskName"}
+_STANDARD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
 
 class JsonFormatter(logging.Formatter):
