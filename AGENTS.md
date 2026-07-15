@@ -98,6 +98,11 @@ Astro server routes:
 | `/api/auth/logout` | GET | Clear session + IdP end-session redirect |
 | `/api/auth/me` | GET | Current canonical identity (`locals.auth`) |
 | `/api/audit` | GET | Paginated audit log (operator: own groups; admin: all) |
+| `/api/connections` | GET, POST | List (member+: own groups; admin: all) / create (operator+) connections — credentials write-only, never returned |
+| `/api/connections/[id]` | GET, PUT, DELETE | Get / update / delete a connection (group-owned; PUT replaces credentials wholesale) |
+| `/api/connections/[id]/test` | POST | Request a connectivity test (inserts a `connection_checks` row the pipeline drains — ADR 0004) |
+| `/api/connections/[id]/checks/[checkId]` | GET | Poll a test request |
+| `/api/connections/[id]/host-key/reset` | POST | Clear the TOFU host-key pin so the next test re-pins (ssh/sftp) |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware
@@ -105,11 +110,19 @@ exposes `locals.auth` to all server routes. Full env-var reference and flow
 details: `docs/auth.md`.
 
 **RBAC & audit**: the permission guard in `src/middleware.ts` requires the
-`operator`/`admin` role for API mutations (extensions CRUD today; reads stay
-open) and writes one append-only `stac_higher.audit_log` row per gated
-mutation (allowed or denied) plus login/logout. The dev-bypass identity is an
+`operator`/`admin` role for API mutations (extensions + connections CRUD;
+reads stay open except the auth-required connections/audit surfaces) and
+writes one append-only `stac_higher.audit_log` row per gated mutation
+(allowed or denied) plus login/logout. The dev-bypass identity is an
 operator, so existing flows keep working without login. Details:
 `docs/auth.md` ("RBAC & audit").
+
+**Connections (Phase 2)**: group-owned ingest/delivery endpoints in
+`stac_higher.connections` with write-only AES-256-GCM-encrypted credentials
+(`CREDENTIALS_MASTER_KEY` env — see `docs/connections.md` for the dev key
+command) and TOFU host-key pinning. Test-connection bridges to the pipeline
+through `stac_higher.connection_checks`
+(`docs/decisions/0004-app-pipeline-bridge.md`).
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

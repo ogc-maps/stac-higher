@@ -31,7 +31,8 @@ export function isAdmin(identity: CanonicalIdentity): boolean {
   return identity.roles.includes("admin");
 }
 
-export type GatedAction = "create" | "update" | "delete";
+/** `test` = test-connection (ROADMAP §5 audit action enum). */
+export type GatedAction = "create" | "update" | "delete" | "test";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -53,8 +54,14 @@ const EXTENSION_UTILITY_PATHS = new Set([
  * `preview` / `resolve-schema`, which persist no user data beyond a TTL
  * cache).
  *
- * Today's gated surface is the extensions CRUD; Phase 2+ adds connections,
- * associations, and collection settings here.
+ * Today's gated surface is the extensions CRUD and the connections CRUD
+ * (Phase 2); Phase 2+ adds associations and collection settings here.
+ *
+ * Note on connections: this table gates by ROLE (operator|admin). GROUP
+ * ownership (§7: operators act only within their own groups) needs the row's
+ * group_id, so it is enforced inside the /api/connections routes — the guard
+ * cannot see the DB. The route-level denial still lands in the guard's audit
+ * row via the response status.
  */
 export function matchGatedRoute(
   method: string,
@@ -71,6 +78,35 @@ export function matchGatedRoute(
   }
   if (m === "POST" && path === "/api/extensions/import") {
     return { action: "create", resourceType: "extension", resourceId: null };
+  }
+
+  if (m === "POST" && path === "/api/connections") {
+    return { action: "create", resourceType: "connection", resourceId: null };
+  }
+  const connTest = path.match(/^\/api\/connections\/([^/]+)\/test$/);
+  if (m === "POST" && connTest) {
+    return { action: "test", resourceType: "connection", resourceId: connTest[1] };
+  }
+  const connHostKeyReset = path.match(
+    /^\/api\/connections\/([^/]+)\/host-key\/reset$/,
+  );
+  if (m === "POST" && connHostKeyReset) {
+    // Modeled as an update of the connection (clears the TOFU pin); the
+    // request path in the audit detail distinguishes it from a config edit.
+    return {
+      action: "update",
+      resourceType: "connection",
+      resourceId: connHostKeyReset[1],
+    };
+  }
+  const connId = path.match(/^\/api\/connections\/([^/]+)$/);
+  if (connId) {
+    if (m === "PUT" || m === "PATCH") {
+      return { action: "update", resourceType: "connection", resourceId: connId[1] };
+    }
+    if (m === "DELETE") {
+      return { action: "delete", resourceType: "connection", resourceId: connId[1] };
+    }
   }
 
   const idMatch = path.match(/^\/api\/extensions\/([^/]+)$/);

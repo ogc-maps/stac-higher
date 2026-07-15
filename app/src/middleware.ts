@@ -9,7 +9,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
   const { pathname } = context.url;
   if (
     pathname.startsWith("/api/extensions") ||
-    pathname.startsWith("/api/audit")
+    pathname.startsWith("/api/audit") ||
+    pathname.startsWith("/api/connections")
   ) {
     await runMigrations();
   }

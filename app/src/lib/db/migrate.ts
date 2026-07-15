@@ -111,6 +111,67 @@ const MIGRATIONS = [
         FOR EACH STATEMENT EXECUTE FUNCTION stac_higher.audit_log_block_mutation();
     `,
   },
+  {
+    // Phase 2 (ROADMAP §5 CONNECTIONS + §5.2): group-owned connections with
+    // write-only encrypted credentials, and the app→pipeline test-connection
+    // bridge table. Both tables follow the cross-runtime contract verbatim —
+    // the Python pipeline codes against these shapes and NEVER creates them
+    // (docs/decisions/0001-migration-ownership.md, 0004-app-pipeline-bridge.md).
+    //
+    // credentials is an encrypted envelope (bytea): 0x01 version byte ||
+    // 12-byte nonce || AES-256-GCM ciphertext+tag. The app encrypts on write
+    // (lib/connections/crypto.ts) and never decrypts; only the pipeline
+    // decrypts at job execution time.
+    //
+    // updated_at is maintained APP-SIDE (lib/connections/storage.ts), not by
+    // a trigger: the pipeline also UPDATEs these rows (status/last_checked_at
+    // on every health sweep), and a trigger would bump updated_at every ~5
+    // minutes, destroying its meaning as "when a user last edited this".
+    name: "004_connections_and_checks",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.connections (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        name text NOT NULL,
+        description text NOT NULL DEFAULT '',
+        protocol text NOT NULL CHECK (protocol IN ('ssh','sftp','ftp','ftps','s3','stac-api')),
+        config jsonb NOT NULL DEFAULT '{}'::jsonb,
+        credentials bytea,
+        host_key text,
+        host_key_pinned_at timestamptz,
+        group_id text NOT NULL,
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        enabled boolean NOT NULL DEFAULT true,
+        status text NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified','ok','error')),
+        last_checked_at timestamptz,
+        last_error text
+      );
+
+      CREATE INDEX IF NOT EXISTS connections_group_id_idx
+        ON stac_higher.connections (group_id);
+
+      CREATE TABLE IF NOT EXISTS stac_higher.connection_checks (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        connection_id uuid NOT NULL REFERENCES stac_higher.connections(id) ON DELETE CASCADE,
+        requested_by text NOT NULL,
+        requested_at timestamptz NOT NULL DEFAULT now(),
+        status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+        result jsonb,
+        finished_at timestamptz
+      );
+
+      CREATE INDEX IF NOT EXISTS connection_checks_connection_id_idx
+        ON stac_higher.connection_checks (connection_id);
+
+      -- The pipeline drain job claims work with
+      -- "SELECT ... WHERE status = 'pending' ... FOR UPDATE SKIP LOCKED";
+      -- this partial index keeps that scan cheap as done rows accumulate.
+      CREATE INDEX IF NOT EXISTS connection_checks_pending_idx
+        ON stac_higher.connection_checks (requested_at)
+        WHERE status = 'pending';
+    `,
+  },
 ];
 
 let migrated = false;
