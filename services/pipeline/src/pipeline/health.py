@@ -14,9 +14,7 @@ from pipeline.jobs.heartbeat import STATE, HeartbeatState
 from pipeline.queue.interface import QueueBackend, QueueConnectionError
 
 
-def create_health_app(
-    queue: QueueBackend, heartbeat_state: HeartbeatState = STATE
-) -> FastAPI:
+def create_health_app(queue: QueueBackend, heartbeat_state: HeartbeatState = STATE) -> FastAPI:
     app = FastAPI(title="stac-higher-pipeline", version=__version__, docs_url=None)
 
     @app.get("/health")

@@ -162,6 +162,14 @@ services:
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis
       - HEALTH_PORT=8083
+      # Same master key the app uses to seal credentials (docs/connections.md).
+      # The pipeline decrypts connection credentials with it; the drain/health
+      # jobs fail their tick loudly if it is unset.
+      - CREDENTIALS_MASTER_KEY=${CREDENTIALS_MASTER_KEY:-}
+      # Egress allowlist: hosts the SSRF guard permits even when they resolve to
+      # private/compose-internal addresses. Defaults cover the throwaway test
+      # servers (infra/compose.test-servers.yml) and MinIO.
+      - EGRESS_ALLOW_HOSTS=${EGRESS_ALLOW_HOSTS:-minio,sftp-test,ftp-test,ftps-test}
     ports:
       - "8083:8083"
     depends_on:

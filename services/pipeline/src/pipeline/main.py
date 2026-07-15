@@ -15,7 +15,7 @@ import uvicorn
 
 from pipeline.config import Settings
 from pipeline.health import create_health_app
-from pipeline.jobs import heartbeat
+from pipeline.jobs import drain, health_sweep, heartbeat
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 def build_queue(settings: Settings) -> ProcrastinateQueue:
     queue = ProcrastinateQueue(settings.database_url, schema=settings.queue_schema)
     heartbeat.register(queue)
+    # Phase 2 connection bridge (ADR 0004): drain user-requested tests + sweep.
+    drain.register(queue, settings)
+    health_sweep.register(queue, settings)
     return queue
 
 

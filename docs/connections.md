@@ -90,6 +90,29 @@ Connection responses expose host keys as metadata only:
 Authz failures use the standard guard shape:
 `{"error": "...", "code": "unauthenticated" | "forbidden"}` (401/403).
 
+## Pipeline side
+
+The Python pipeline (`services/pipeline`) is the only runtime that decrypts
+`credentials` and the only one with the protocol adapters + egress policy
+(ROADMAP §5.2). It codes against these tables and never creates them (ADR 0001).
+
+- **Envelope decrypt** — `connections/envelope.py` mirrors `crypto.ts`
+  byte-for-byte (a cross-runtime known-answer test locks the format). Needs the
+  same `CREDENTIALS_MASTER_KEY`.
+- **Egress policy** — `connections/egress.py` resolves every target host and
+  blocks private/loopback/link-local/metadata addresses (deny-by-default;
+  `EGRESS_ALLOW_HOSTS` is the only exception). Enforced before any adapter
+  socket opens.
+- **Adapters + TOFU** — `connections/adapters/` (`s3`, `sftp`/`ssh`, `ftp`,
+  `ftps`; `stac-api` reserved). SSH-family `test()` surfaces the server host
+  key; `adapters/tofu.py` decides first-pin / match / hard-fail mismatch.
+- **Bridge jobs** — `pipeline.connection_check_drain` (drains
+  `connection_checks`) and `pipeline.connection_health_sweep` (tests enabled
+  connections). Both update only health/pin columns, never `updated_at`. Drain
+  runs on a 1-minute cron that clears the whole backlog each tick (ADR 0004's
+  ~10 s target is approximated; sub-minute needs a NOTIFY-woken drain — see ADR
+  0004 "Revisit"). Details: `services/pipeline/README.md`.
+
 ## Audit
 
 Every connection mutation, test request, and host-key reset lands one

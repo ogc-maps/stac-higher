@@ -15,6 +15,27 @@ def test_defaults():
     assert settings.health_port == DEFAULT_HEALTH_PORT == 8083
     assert settings.queue_schema == DEFAULT_QUEUE_SCHEMA == "procrastinate"
     assert settings.log_level == "INFO"
+    # connection-job settings default to absent/empty (jobs fail their tick
+    # loudly rather than crash the process at startup).
+    assert settings.credentials_master_key is None
+    assert settings.egress_allow_hosts == frozenset()
+
+
+def test_connection_env_overrides():
+    settings = Settings.from_env(
+        env={
+            "CREDENTIALS_MASTER_KEY": "abc123==",
+            "EGRESS_ALLOW_HOSTS": "MinIO, sftp-test ,ftp-test,",
+        }
+    )
+    assert settings.credentials_master_key == "abc123=="
+    # comma-split, trimmed, lowercased, empties dropped.
+    assert settings.egress_allow_hosts == frozenset({"minio", "sftp-test", "ftp-test"})
+
+
+def test_blank_credentials_key_is_none():
+    settings = Settings.from_env(env={"CREDENTIALS_MASTER_KEY": ""})
+    assert settings.credentials_master_key is None
 
 
 def test_env_overrides():
