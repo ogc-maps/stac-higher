@@ -567,7 +567,18 @@ islands, TanStack Query for server state, shared components in
 Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 6 and 7 can
 swap, and 8's IaC work can start in parallel any time after 2.
 
-### Phase 0 — Foundations
+**Implementation status — 2026-07-15** (legend: ✅ done · 🚧 in progress · ⬜ not started):
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 — Foundations | ✅ Done | Merged to `ai/main`, full stack verified live (`docker compose up`, heartbeat through the queue, client on the built-in catalog). |
+| 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
+| 2 — Connections | 🚧 In progress | App-side connections CRUD + credential envelope + RBAC/audit + test-connection bridge built on branch `ai/p2-connections-api` (verified, **not yet merged**). Pipeline adapters (egress policy, TOFU, health/check jobs) and the `/connections` UI are **not yet built**. |
+| 3–8 | ⬜ Not started | — |
+
+Per-phase detail and any carried-forward items are noted inline below.
+
+### Phase 0 — Foundations ✅ **Done (2026-07-14)**
 Repo and runtime scaffolding so every later phase has a place to land.
 
 - `services/pipeline`: Python package (uv/ruff/pytest), **queue interface**
@@ -581,8 +592,16 @@ Repo and runtime scaffolding so every later phase has a place to land.
 - **Done when:** `docker compose up` brings up the full stack; pipeline
   service runs a no-op scheduled job through the queue interface; client
   talks to the built-in catalog out of the box.
+- **✅ Delivered:** `services/pipeline` (queue interface + Procrastinate
+  backend + `/health` + Dockerfile) ✅; compose grows MinIO / Keycloak
+  (:8180) / stac-auth-proxy (:8081, pass-through) ✅; built-in catalog seeded
+  as an undeletable client entry ✅; migration ownership settled
+  (ADR 0001 — app middleware owns `stac_higher`, Procrastinate owns its own
+  schema) ✅. **Done-when verified live:** whole stack healthy, heartbeat
+  ticking through the queue, CRUD through the proxy against the built-in
+  catalog. All three sub-branches merged to `ai/main`.
 
-### Phase 1 — Auth, RBAC & audit core
+### Phase 1 — Auth, RBAC & audit core ✅ **Done (2026-07-14)**
 - OIDC login in the Astro app (session, token refresh); Keycloak realm
   template with `member`/`operator`/`admin` roles and example groups.
 - **Claims-mapping layer**: per-deployment config → canonical groups/roles;
@@ -598,26 +617,52 @@ Repo and runtime scaffolding so every later phase has a place to land.
 - **Done when:** two users in different groups see different connections and
   collections; roles gate mutations end-to-end; every mutation appears in the
   audit log.
+- **✅ Delivered:** OIDC login (PKCE, encrypted session cookie, token
+  refresh, RP-initiated logout) ✅; claims-mapping layer (Keycloak/Cognito/
+  Entra shapes tested) ✅; realm template with `member`/`operator`/`admin` +
+  example groups + test users ✅; permission middleware + `collection_settings`
+  (pre-existing-collection default settled in ADR 0003) ✅; append-only
+  `audit_log` (trigger-enforced, login/CRUD events, secrets redacted) —
+  verified live: 47 rows written, `UPDATE`/`DELETE` rejected ✅; dev-bypass
+  mode ✅. Opt-in proxy enforcement (`infra/compose.auth-enforced.yml`)
+  integration-tested: anonymous writes rejected, operator CRUD, wrong
+  realm/audience rejected ✅. A **security review caught and fixed a critical
+  open redirect** in the OIDC `returnTo` handling (CWE-601). All sub-branches
+  merged to `ai/main`.
+- **⚠️ Carried forward:** per-collection **read-visibility** filtering from
+  group claims is not achievable via stac-auth-proxy config alone — it needs
+  OPA or a small custom filter factory (documented in ADR 0002). The
+  "different groups see different *collections*" clause of the done-when is
+  therefore deferred to that follow-up; connection-level isolation lands with
+  Phase 2.
 
-### Phase 2 — Connections
-- `connections` table, CRUD API + Zod schemas, credential envelope encryption
-  (provider interface: local master key now, KMS later).
-- Python adapter layer: one interface (`list/get/put/delete/test`),
+### Phase 2 — Connections 🚧 **In progress**
+- ✅ `connections` table, CRUD API + Zod schemas, credential envelope encryption
+  (provider interface: local master key now, KMS later). *Built on
+  `ai/p2-connections-api`, verified, not yet merged.*
+- ⬜ Python adapter layer: one interface (`list/get/put/delete/test`),
   implementations for s3, sftp (also covers ssh file transfer), ftp, ftps.
   SSH/SCP fallback where SFTP subsystem is unavailable. `stac-api` protocol
   reserved in the enum, unimplemented.
-- **Egress policy in the adapter layer**: deny private/loopback/link-local by
+- ⬜ **Egress policy in the adapter layer**: deny private/loopback/link-local by
   default + allowlist env; network-policy requirements documented.
-- **Host-key TOFU pinning**: captured on first successful test, hard-fail on
+- ⬜ **Host-key TOFU pinning**: captured on first successful test, hard-fail on
   mismatch, re-verify action.
-- Test-connection endpoint (app → queue job → pipeline runs `test` → result
-  surfaced) and scheduled health checks updating status.
-- `/connections` UI: list with badges, per-protocol wizard forms.
+- 🚧 Test-connection endpoint (app → queue job → pipeline runs `test` → result
+  surfaced) and scheduled health checks updating status. *App/DB side (the
+  `connection_checks` request-table bridge, ADR 0004) is done on the branch;
+  the pipeline drain/health-sweep jobs that consume it are not.*
+- ⬜ `/connections` UI: list with badges, per-protocol wizard forms.
 - **Done when:** a user can create each protocol type, see credentials
   write-only, test it, watch health status update on schedule, and a host-key
   change is caught and surfaced.
+- **Status note:** the cross-runtime contract (table DDL, credential envelope
+  byte format, bridge semantics, egress rules) is fixed; the app half is
+  implemented against it. Remaining work is the pipeline adapters + the two
+  periodic jobs + the UI. Merge of `ai/p2-connections-api` is pending the
+  adapters branch so `docker compose up` doesn't reference unbuilt job code.
 
-### Phase 3 — Object storage & asset service
+### Phase 3 — Object storage & asset service ⬜ **Not started**
 - Storage abstraction in app + pipeline (S3 SDK against MinIO/S3), bucket
   layout per §5.3.
 - `/api/assets/{collection}/{item}/{asset}`: RBAC check → presigned 302
@@ -628,7 +673,7 @@ Repo and runtime scaffolding so every later phase has a place to land.
 - **Done when:** a user uploads a file in the item form, the item's asset
   href resolves through the asset route, and unauthorized users get 403.
 
-### Phase 4 — Ingest pipeline
+### Phase 4 — Ingest pipeline ⬜ **Not started**
 - `collection_connections` (ingest direction) + `ingest_files` ledger
   (time-partitioned, versioned rows).
 - Scheduler (per-association poll) + DISCOVER/GROUP/FETCH/EXTRACT/ITEMIZE
@@ -644,7 +689,7 @@ Repo and runtime scaffolding so every later phase has a place to land.
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
 
-### Phase 5 — Delivery pipeline
+### Phase 5 — Delivery pipeline ⬜ **Not started**
 - **Outbox event bridge** per §5.4: vendored statement-level trigger →
   `item_events` + payload-less NOTIFY wake-up; dispatcher consumes the outbox
   (survives restarts, safe under bulk loads). Spike pgstac partition/trigger
@@ -661,7 +706,7 @@ Repo and runtime scaffolding so every later phase has a place to land.
   updated item redelivers only changed assets, and a dead destination
   produces a dead-letter + redeliver path, not a stuck queue.
 
-### Phase 6 — Observability & retention
+### Phase 6 — Observability & retention ⬜ **Not started**
 - Flow expectations + monitor job + `alerts` lifecycle (fire/ack/resolve).
 - **Retention GC** per §6.5: `retention_days` per collection, bulk expiry,
   grace-window asset removal, partition-drop hygiene for ledger/log tables.
@@ -673,7 +718,7 @@ Repo and runtime scaffolding so every later phase has a place to land.
   declared expectation window and notifies the group's channels; an expired
   item leaves the catalog and, after the grace window, object storage.
 
-### Phase 7 — Direct interaction (push ingest)
+### Phase 7 — Direct interaction (push ingest) ⬜ **Not started**
 - Externally-writable flag per collection; stac-auth-proxy write policies.
 - Finalize step per §6.2: validate staged assets (stac-pydantic /
   stac-validator), checksum, move to canonical, rewrite hrefs.
@@ -682,7 +727,7 @@ Repo and runtime scaffolding so every later phase has a place to land.
   an item, the item finalizes into canonical storage, and delivery fires
   from it like any other item.
 
-### Phase 8 — Cloud deployment, scale gate & visualization
+### Phase 8 — Cloud deployment, scale gate & visualization ⬜ **Not started**
 - AWS stack via eoapi-cdk extended: RDS (pgstac), S3, KMS, ECS/Fargate (app,
   pipeline, proxies), Cognito-or-Keycloak decision per deployment
   (GovCloud-compatible service choices).
