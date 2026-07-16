@@ -567,13 +567,13 @@ islands, TanStack Query for server state, shared components in
 Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 6 and 7 can
 swap, and 8's IaC work can start in parallel any time after 2.
 
-**Implementation status — 2026-07-15** (legend: ✅ done · 🚧 in progress · ⬜ not started):
+**Implementation status — 2026-07-16** (legend: ✅ done · 🚧 in progress · ⬜ not started):
 
 | Phase | Status | Notes |
 |---|---|---|
 | 0 — Foundations | ✅ Done | Merged to `ai/main`, full stack verified live (`docker compose up`, heartbeat through the queue, client on the built-in catalog). |
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
-| 2 — Connections | 🚧 In progress | App-side connections CRUD + credential envelope + RBAC/audit + test-connection bridge built on branch `ai/p2-connections-api` (verified, **not yet merged**). Pipeline adapters (egress policy, TOFU, health/check jobs) and the `/connections` UI are **not yet built**. |
+| 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
@@ -636,31 +636,42 @@ Repo and runtime scaffolding so every later phase has a place to land.
   therefore deferred to that follow-up; connection-level isolation lands with
   Phase 2.
 
-### Phase 2 — Connections 🚧 **In progress**
+### Phase 2 — Connections ✅ **Done (2026-07-16)**
 - ✅ `connections` table, CRUD API + Zod schemas, credential envelope encryption
-  (provider interface: local master key now, KMS later). *Built on
-  `ai/p2-connections-api`, verified, not yet merged.*
-- ⬜ Python adapter layer: one interface (`list/get/put/delete/test`),
-  implementations for s3, sftp (also covers ssh file transfer), ftp, ftps.
-  SSH/SCP fallback where SFTP subsystem is unavailable. `stac-api` protocol
-  reserved in the enum, unimplemented.
-- ⬜ **Egress policy in the adapter layer**: deny private/loopback/link-local by
-  default + allowlist env; network-policy requirements documented.
-- ⬜ **Host-key TOFU pinning**: captured on first successful test, hard-fail on
-  mismatch, re-verify action.
-- 🚧 Test-connection endpoint (app → queue job → pipeline runs `test` → result
-  surfaced) and scheduled health checks updating status. *App/DB side (the
-  `connection_checks` request-table bridge, ADR 0004) is done on the branch;
-  the pipeline drain/health-sweep jobs that consume it are not.*
-- ⬜ `/connections` UI: list with badges, per-protocol wizard forms.
+  (provider interface: local master key now, KMS later). Merged to `ai/main`.
+- ✅ Python adapter layer: one interface (`list/get/put/delete/test`),
+  implementations for s3 (boto3), sftp (asyncssh — also covers ssh file
+  transfer), ftp + ftps (aioftp). `stac-api` protocol reserved in the enum,
+  raises `NotImplementedError`.
+- ✅ **Egress policy in the adapter layer**: deny private/loopback/link-local/
+  metadata by default + `EGRESS_ALLOW_HOSTS` allowlist. Hardened against two
+  SSRF vectors an adversarial review found — DNS-rebinding TOCTOU (resolve+pin
+  the IP; FTPS/S3-https keep the hostname for TLS with a fail-closed recheck,
+  documented residual) and FTP PASV/EPSV data-channel redirect (data channel
+  forced to the validated control host).
+- ✅ **Host-key TOFU pinning**: captured on first successful test, hard-fail on
+  mismatch, re-verify via `/api/connections/[id]/host-key/reset`.
+- ✅ Test-connection endpoint (app → `connection_checks` request table → pipeline
+  drain job runs `test` → result surfaced) and scheduled health checks. The
+  drain (`* * * * *`, drains all pending) and health sweep (`*/5 * * * *`) are
+  registered periodic jobs; neither touches `connections.updated_at`. ADR 0004.
+- ✅ `/connections` UI: list with status/credential/host-key badges, per-protocol
+  wizard forms (write-only credentials), test+poll, host-key reset.
 - **Done when:** a user can create each protocol type, see credentials
   write-only, test it, watch health status update on schedule, and a host-key
-  change is caught and surfaced.
-- **Status note:** the cross-runtime contract (table DDL, credential envelope
-  byte format, bridge semantics, egress rules) is fixed; the app half is
-  implemented against it. Remaining work is the pipeline adapters + the two
-  periodic jobs + the UI. Merge of `ai/p2-connections-api` is pending the
-  adapters branch so `docker compose up` doesn't reference unbuilt job code.
+  change is caught and surfaced. — **Met.**
+- **Verified live (2026-07-16):** full `docker compose up` + `infra/compose.test-servers.yml`
+  drove real test-connections through the drain job — SFTP (host key TOFU-pinned),
+  FTP, and S3/MinIO all reached `ok`; a connection targeting `169.254.169.254`
+  was blocked by the egress policy; a tampered host-key pin was caught as a
+  hard-fail mismatch. FTPS was live-tested only on amd64 (its vsftpd test-server
+  image is amd64-only / crashes under Rosetta on Apple Silicon); it shares the
+  `FtpAdapter` code path exercised by the live FTP test and is unit-tested.
+- **Cross-runtime contract (fixed; consumed by Phase 3+):** the credential
+  envelope byte format (`0x01 ‖ nonce ‖ AES-256-GCM`), the `connections` /
+  `connection_checks` table DDL, and the adapter interface (`test/list/get/put/
+  delete`) are the seam the object-storage/asset service and ingestion phases
+  build on. `CREDENTIALS_MASTER_KEY` must be shared by the app and the pipeline.
 
 ### Phase 3 — Object storage & asset service ⬜ **Not started**
 - Storage abstraction in app + pipeline (S3 SDK against MinIO/S3), bucket
