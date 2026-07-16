@@ -228,3 +228,14 @@ symlink. Read the relevant `SKILL.md` *before* starting a matching task.
 
 See `docs/AI-STRATEGY.md` for how this file, the skills, and per-harness shims
 fit together.
+
+## Documentation
+
+Project docs live in `docs/` (index: `docs/README.md`), organized into three
+tracks — read the relevant one before non-trivial work and update it after:
+
+- **`docs/FEATURES.md`** — catalog of what's built, per phase, with entry points.
+- **`docs/decisions/`** — ADRs (index + invariants in `docs/decisions/README.md`).
+  Add the next-numbered ADR for any significant, hard-to-reverse choice.
+- **`docs/ISSUES.md`** — carried-forward work, known limitations/residual risk,
+  and deferrals. Log new gaps here rather than leaving them implicit.
