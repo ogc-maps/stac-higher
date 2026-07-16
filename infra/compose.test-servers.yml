@@ -32,15 +32,16 @@ services:
       - "2222:22" # host-side convenience; adapters use the in-network :22
     restart: "no"
 
-  # Plain FTP (vsftpd) with passive mode. No TLS.
+  # Plain FTP (delfer/alpine-ftp-server) with passive mode. No TLS.
+  # Alpine-based and multi-arch (works on arm64 / Apple Silicon). The user is
+  # chrooted to its folder, so root_path="/" lists it.
   ftp-test:
-    image: fauria/vsftpd:latest
+    image: delfer/alpine-ftp-server:latest
     environment:
-      - FTP_USER=demo
-      - FTP_PASS=demo
-      - PASV_ADDRESS=ftp-test
-      - PASV_MIN_PORT=21100
-      - PASV_MAX_PORT=21110
+      - USERS=demo|demo
+      - ADDRESS=ftp-test
+      - MIN_PORT=21100
+      - MAX_PORT=21110
     ports:
       - "2121:21"
       - "21100-21110:21100-21110"
@@ -48,8 +49,16 @@ services:
 
   # FTPS (vsftpd with a self-signed cert) — explicit TLS (AUTH TLS). Point an
   # `ftps` connection here with config.implicit=false.
+  #
+  # ARCH CAVEAT: fauria/vsftpd ships amd64 only and crashes under Rosetta on
+  # Apple Silicon ("rosetta error: mmap_anonymous_rw mmap failed"), so this
+  # service only runs on an amd64 host. FTPS reuses the FtpAdapter code path
+  # (only the TLS upgrade differs) which the plain-FTP service above exercises
+  # live; the FTPS-specific behaviour is covered by unit tests. On arm64, skip
+  # this service (or run it on an amd64 machine) — the pipeline is unaffected.
   ftps-test:
     image: fauria/vsftpd:latest
+    platform: linux/amd64
     environment:
       - FTP_USER=demo
       - FTP_PASS=demo
