@@ -575,7 +575,7 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
-| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. Pipeline ingest chain (Slice B) + `storage_mode: reference` (Slice C) pending. |
+| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline) in progress: B1 done** (adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam). **Next: B2+B3** (ingest repo + scheduler + DISCOVER/GROUP/FETCH), then B4 (EXTRACT/ITEMIZE — pypgstac). `storage_mode: reference` (Slice C) pending. |
 | 5–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
@@ -713,26 +713,44 @@ Repo and runtime scaffolding so every later phase has a place to land.
   arrives with the Phase 7 push path.
 
 ### Phase 4 — Ingest pipeline 🚧 **In progress**
-- ✅ **Slice A (app associations + Data-flow UI):** `collection_connections` +
+
+Delivered in slices (each verify-gated on its own worktree branch off `ai/main`).
+
+- ✅ **Slice A — app associations + Data-flow UI:** `collection_connections` +
   `ingest_files` ledger (migration 005; app owns DDL, pipeline reads/writes
   rows). Ingest `config` Zod schema (§5.1) as the cross-runtime contract.
   `/api/collections/[id]/connections` CRUD — operator+ gated & audited, group
   ownership enforced in-route, `reference` mode restricted to s3 connections,
   duplicate (collection,connection,direction) → 409. Data-flow tab (ingest
   half) on built-in-catalog collections. `ingest_files` is a plain table here;
-  Phase 6 time-partitions it (mirrors the audit_log deferral). Slices B/C below
-  are pending.
-- ⬜ `collection_connections` (ingest direction) + `ingest_files` ledger
-  (time-partitioned, versioned rows).
-- Scheduler (per-association poll) + DISCOVER/GROUP/FETCH/EXTRACT/ITEMIZE
-  **batch-oriented** job chain per §6.1, with settled-check, grouping timeout,
-  post-ingest actions, re-ingest versioning.
-- `storage_mode: copy | reference` (reference for object-store sources; asset
-  route redirects to source).
-- Metadata strategies: `raster_auto` (rio-stac), sidecar XML/JSON parse,
-  collection defaults; stac-pydantic validation gate before upsert. Evaluate
-  rustac for bulk paths.
-- Data flow tab (ingest half) in the collection UI.
+  Phase 6 time-partitions it (mirrors the audit_log deferral). **Live-verified
+  2026-07-16** (migration auto-applied, full CRUD + audit through the running
+  stack).
+- ✅ **Slice B1 — adapter list-metadata + `build_adapter`:** `StorageAdapter.list()`
+  now returns `list[FileEntry]` (path/size/mtime/etag/is_dir) across s3/sftp/ftp
+  — the metadata the settled-check needs. New `connections/build.py::build_adapter`
+  (decrypt → adapter) is the seam the ingest workers consume for `list`/`get`;
+  `probe.run_adapter_test` refactored onto it. 117 pipeline tests, ruff clean.
+- ⬜ **Slice B2+B3 (NEXT) — ingest repo + scheduler + DISCOVER/GROUP/FETCH:**
+  `IngestRepo` (+ FakeRepo) mirroring `connections/repo.py`; `ingest_poll`
+  scheduler (per-association poll, interval-as-N-ticks — Procrastinate is 1-min
+  granular); DISCOVER (`adapter.list` → diff vs ledger + settled-check across
+  two polls); GROUP (grouping rule + timeout); FETCH copy-mode (buffered
+  `adapter.get` → platform `put_object` at `assets/{collection}/{item}/{filename}`).
+  Batch-oriented `register_task` chain per §6.1, idempotent against the ledger.
+  (Repo interface is dictated by the stage logic — build the two together, not
+  the repo in isolation.)
+- ⬜ **Slice B4 — EXTRACT + ITEMIZE:** metadata strategies (`raster_auto` via
+  rio-stac/pystac, sidecar XML/JSON parse, collection defaults); stac-pydantic
+  validation gate; **pypgstac** batched upsert (locked choice — pgstac schema is
+  image-owned, so this respects ADR 0001). New pipeline deps (rio-stac/pystac/
+  stac-pydantic/stac-validator/pypgstac) + GDAL in the Dockerfile + an ADR.
+  Re-ingest versioning (fingerprint change → new version, same `item_id`).
+  Evaluate rustac for bulk paths.
+- ⬜ **Slice C — `storage_mode: reference`:** the `resolveAssetTarget` branch to
+  the source href (persisted in `ingest_files`); not required by the done-when,
+  so it lands last.
+- ⬜ **Slice B5 — integration + live end-to-end test.**
 - **Done when:** files dropped on a source connection appear as STAC items
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
