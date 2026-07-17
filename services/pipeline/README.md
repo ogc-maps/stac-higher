@@ -50,6 +50,7 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `LOG_LEVEL` | `INFO` | Root log level |
 | `CREDENTIALS_MASTER_KEY` | _(unset)_ | base64-encoded 32-byte AES-256-GCM key, **identical to the app's**. Decrypts connection credentials. Absent at startup is tolerated — the connection drain/health-sweep ticks fail loudly (logged) instead of killing the process. |
 | `EGRESS_ALLOW_HOSTS` | _(empty)_ | Comma-separated hostnames the egress policy permits even when they resolve to private/loopback addresses (e.g. the compose-internal test servers). Matched case-insensitively. |
+| `ASSET_HREF_BASE` | `/api/assets` | Root-relative base path ITEMIZE uses when building an item's asset `href`s (`{ASSET_HREF_BASE}/{collection}/{item}/{filename}`) — must match the app's asset route (ADR 0005). |
 
 ## Connections (Phase 2)
 
@@ -97,6 +98,71 @@ Phase 2.
 servers on the compose network for the **lead** to run adapter integration
 against (S3 reuses MinIO). Unit tests here mock every external client and DNS —
 no live servers, no Docker.
+
+## Ingest (Phase 4)
+
+Poll-based ingest of files from source connections into built-in-catalog
+collections (ROADMAP §6.1). One `IngestAssociation` (`stac_higher.
+collection_connections`, `direction = 'ingest'`) runs the pipeline:
+
+```
+poll → DISCOVER → GROUP → FETCH → EXTRACT → ITEMIZE → post-ingest
+```
+
+- **poll / DISCOVER** (`ingest/scheduler.py`, `ingest/discover.py`) — the
+  `ingest_poll` periodic job enqueues one DISCOVER job per enabled association
+  every N whole-minute ticks (`config.poll_frequency_seconds`, Procrastinate's
+  1-minute granularity). DISCOVER lists the source, normalizes paths relative
+  to `source_path`, filters by `include`/`exclude` globs, and runs the
+  **settled check**: a file's size/fingerprint must be unchanged across two
+  consecutive polls before it's eligible — protects against picking up a
+  file mid-upload. A fingerprint change on an already-`itemized` file is a new
+  version of the same product (re-ingest).
+- **GROUP** (`ingest/group.py`) — `grouping.rule: none` itemizes each settled
+  file immediately as its own item; `shared_basename` waits for sibling files
+  sharing a basename, up to `timeout_seconds`, then applies `on_timeout`
+  (`ingest_partial` | `discard`).
+- **FETCH** (`ingest/fetch.py`) — copy-mode only: buffered `adapter.get` →
+  `platform.put_object` into canonical storage at
+  `assets/{collection}/{item}/{filename}`, sha256 checksum recorded, ledger
+  row → `stored`. `storage_mode: reference` associations stop at `settled`
+  (Slice C consumes them — see [`../../docs/ISSUES.md`](../../docs/ISSUES.md) I-21).
+- **EXTRACT** (`ingest/extract.py`) — turns a group's `stored` members into a
+  STAC item dict per the association's `metadata.strategy` (§5.1):
+  `raster_auto` (rio-stac/pystac over an in-memory `rasterio.MemoryFile` read
+  of the primary raster — no GDAL S3 config needed since bytes are already in
+  canonical storage), `sidecar` (parse an adjacent XML — via `defusedxml`,
+  hardened against XXE and entity-expansion DoS — or JSON sidecar file), or
+  `defaults_only` (a null-geometry item from collection defaults). Every
+  non-primary member becomes an additional asset; a member sharing the
+  primary's filename stem always loses to the `data` asset. Asset hrefs point
+  at `{ASSET_HREF_BASE}/{collection}/{item}/{filename}`. A field that can't be
+  resolved raises `ExtractError` rather than emitting a bad item.
+- **ITEMIZE** (`ingest/itemize.py`, `stac/pgstac_writer.py`) — `run_itemize`
+  re-reads each source file's latest ledger row and acts only on members still
+  `stored` (idempotent, restart-safe), calls EXTRACT, validates the item with
+  the **core** `stac_pydantic.Item` model (offline, core-structural gate —
+  intentionally not `stac_pydantic.api.Item`, which requires a `root` link
+  EXTRACT-built items don't carry), then upserts via **pypgstac**
+  (`Loader.load_items(..., insert_mode=Methods.upsert)` in a thread) — verified
+  to write item data only via temp `ON COMMIT DROP` staging tables and pgstac's
+  own upsert functions, no DDL (ADR 0001-compatible). EXTRACT failure or a
+  validation failure marks the members `failed`; a missing collection is a
+  permanent `failed` (`CollectionMissing`); any other upsert error propagates
+  so the job retries. On success the members go `itemized` and post-ingest
+  runs. See [ADR 0006](../../docs/decisions/0006-ingest-metadata-and-upsert.md)
+  for the library choices (pinned `rio-stac`/`pystac`/`rasterio`/`defusedxml`/
+  `stac-pydantic`/`pypgstac[psycopg]`, why the rasterio wheels need **no
+  Dockerfile change** (bundled GDAL, no system install), and why the
+  `pgstac` image is pinned to `v0.9.11` to stay in lockstep with the pinned
+  `pypgstac` client).
+- **post-ingest** (`ingest/postingest.py`) — `leave` (default) no-ops,
+  `delete` removes the source files, `move:<path>` copies then deletes.
+  Non-fatal: a failed source cleanup is logged but never fails the job or
+  reverts the ledger (the item is already catalogued).
+
+`jobs/ingest.py` registers each stage as a queue task and chains them,
+idempotent against the `ingest_files` ledger throughout.
 
 ## Develop
 

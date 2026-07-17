@@ -108,3 +108,43 @@ DISCOVER lists `source_path` once. S3's prefix listing is naturally deep (all ke
 ### I-21 · Reference-mode ingest stalls at `settled` until Slice C ⚪
 `storage_mode: reference` associations run DISCOVER (files reach `settled`) but GROUP forms no groups and FETCH skips the copy, so nothing advances to `stored`/`itemized`. This is intentional — reference itemization (asset hrefs pointing at the source via `resolveAssetTarget`) is Slice C — but a reference association created now will accumulate `settled` ledger rows that don't progress. Slice C consumes them.
 - Tracked in: here; `services/pipeline/.../ingest/group.py`, `services/pipeline/.../ingest/fetch.py`.
+
+---
+
+## Phase 4 — ingest pipeline (Slice B4: EXTRACT + ITEMIZE)
+
+### I-22 · `file_mtime` is a ledger settle-time approximation, not a true source mtime 🟡
+`metadata.defaults.datetime: file_mtime` resolves to the `ingest_files` ledger row's `updated_at` (the settle-check timestamp DISCOVER records), not the source file's actual modification time — the ledger has no durable mtime column, and etag-only source protocols (S3) expose no mtime at all to record one from. Adequate for the common case (files settle shortly after they land), but not exact for sources with meaningful clock skew between write and poll. A true source-mtime column would be a future **app-owned** migration (ADR 0001 keeps DDL ownership with the app).
+- Tracked in: [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md); `services/pipeline/.../ingest/extract.py` (`resolve_datetime`).
+
+### I-23 · pgstac/pypgstac version lockstep on upgrade 🟡
+The pinned `pypgstac[psycopg]` client minor must track the pinned `ghcr.io/stac-utils/pgstac` image minor (both currently `0.9.11`) — pypgstac's upsert path calls pgstac's own SQL functions, and that surface can shift between minor versions. Any future pgstac image bump must bump the `pypgstac` pin in the same change and re-run the upsert path (unit + `test_integration_itemize.py`) before it ships.
+- Tracked in: [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md); `services/pipeline/pyproject.toml`, `docker-compose.yml`.
+
+### I-24 · Bundled-GDAL driver subset ⚪
+rasterio's `>=1.5,<2` wheels bundle their own GDAL build with a smaller driver set than a full system GDAL install would carry. Sufficient for the ingest media types this platform targets (COG/GeoTIFF and common raster formats); an exotic format outside that subset fails EXTRACT (`ExtractError`) rather than silently degrading. Flag if a source product needs a driver the bundled GDAL omits.
+- Tracked in: [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md); `services/pipeline/.../ingest/extract.py`.
+
+### I-25 · Sidecar `generic_xml` parser covers a minimal MVP field set; sidecar file is not a separate asset ⚪
+The `sidecar` metadata strategy's `generic_xml` parser looks for a small, namespace-agnostic set of date-ish tags (`datetime`/`acquired`/`date`/`acquisitiondate`/`start_datetime`) and no geometry — richer field mapping is a follow-up, not implemented here. Separately: when a raster and its sidecar share a basename (e.g. `scene.tif` + `scene.xml`), `build_assets`/`build_raster_auto` collapse them to a **single** `data` asset keyed by that stem — the raw sidecar file itself is never exposed as a distinct STAC asset, only the metadata parsed out of it lands in `item.properties`. Flag if a product needs the sidecar file itself downloadable as its own asset.
+- Tracked in: [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md); `services/pipeline/.../ingest/extract.py` (`_find_datetime_in_xml`, `build_assets`, `build_raster_auto`).
+
+### I-26 · Memory-buffered raster reads in EXTRACT ⚪
+EXTRACT reads a group's primary raster fully into memory (`rasterio.MemoryFile(raster_bytes)`) before handing it to rio-stac — consistent with FETCH's existing buffered `get`/`put_object` (I-19), but compounding the same envelope-scale risk one stage later: a multi-GB scene is fully buffered twice (FETCH, then EXTRACT) before an item exists. True streaming raster reads are deferred alongside I-19's streaming FETCH gap.
+- Tracked in: here; I-19 (above); `services/pipeline/.../ingest/extract.py` (`build_item`, `build_raster_auto`).
+
+### I-27 · pgstac requires a non-null geometry — `defaults_only` (and geometry-less `sidecar`) items cannot be catalogued 🔴
+**Found during the B4 live verification run (2026-07-17).** pgstac's `items` table enforces a **NOT NULL `geometry` column**, so an item without a geometry is rejected on upsert (`NotNullViolation` on `_items_*.geometry`) — even though the STAC spec and `stac-pydantic` both permit `geometry: null`. Consequences:
+- **`raster_auto` is unaffected** — rio-stac always derives a footprint, so the phase's headline path (rasters → queryable items) works end-to-end (verified live).
+- **`defaults_only` — and `sidecar` when no geometry is parsed — produce `geometry: null` items that pgstac refuses.** In `run_itemize` this surfaces as a non-`CollectionMissing` exception from `writer.upsert_items`, which (by design) propagates rather than being caught, so the item is NOT catalogued and the ledger row stays `stored` (it does not advance to `itemized`, and is not marked `failed`).
+- The B4 unit test `test_validate_item_accepts_null_geometry` asserts null geometry is *valid* (true at the stac-pydantic layer) — the gap is specifically pgstac's storage constraint, one layer down, which the offline unit tests can't see.
+
+**Open product decision (needs the maintainer):** pick one — (a) **fail fast**: reject null-geometry items at the validation gate with a clear "the catalog (pgstac) requires a geometry" message so they land `failed` instead of stuck at `stored`; (b) **synthesize a footprint**: give geometry-less items a configurable default geometry (e.g. from the collection's spatial extent, or a `metadata.defaults.geometry`) — but never a silent world-covering polygon that misrepresents coverage; (c) **require geometry**: document that `defaults_only`/geometry-less `sidecar` are only usable once a geometry source is added. Until decided, `defaults_only` items do not reach the catalog. The DB integration test (`test_integration_itemize.py`) uses a real Polygon to test the supported path.
+- Tracked in: here; `services/pipeline/.../ingest/itemize.py` (`validate_item`, `run_itemize`); `services/pipeline/.../ingest/extract.py` (`build_defaults_only`, `build_sidecar`).
+
+### I-28 · Minor robustness notes from the B4 whole-branch review ⚪
+Non-blocking items the final review surfaced; fix opportunistically.
+- **`CollectionMissing` is detected by substring** (`"is not present in the database"` in `PgPgstacWriter.upsert_items`). A pgstac/pypgstac wording change on a version bump (see I-23 lockstep) would make a genuine missing-collection error propagate as "transient" and retry forever instead of landing `failed`. Prefer matching on exception type / SQLSTATE when feasible.
+- **Non-data stem-collision order differs** between `build_assets` (keeps last on a metadata/metadata stem tie) and `build_raster_auto` (keeps first). Inconsequential today (both are metadata; the data-asset-wins rule IS consistent), but worth unifying.
+- **ITEMIZE is gated on `CREDENTIALS_MASTER_KEY`** even when `post_ingest=leave` (the adapter is only needed for delete/move). In practice the key is always present (FETCH required it to reach `stored`), so impact is low; the gate could be relaxed to only require the key when the action actually needs the adapter.
+- Tracked in: `services/pipeline/.../stac/pgstac_writer.py`, `.../ingest/extract.py`, `.../jobs/ingest.py`.
