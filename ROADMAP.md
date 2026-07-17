@@ -575,7 +575,7 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
-| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline) in progress: B1 + B2+B3 done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage). **Next: B4** (EXTRACT/ITEMIZE — pypgstac). `storage_mode: reference` (Slice C) pending. |
+| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline) in progress: B1, B2+B3, B4 done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change). **B5 (integration + live end-to-end) pending a live run** — code side (queryable item + changed→updated assertions) is in place; the copy chain through FETCH is already live-verified, the EXTRACT/ITEMIZE leg awaits its live run. `storage_mode: reference` (Slice C) pending. |
 | 5–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
@@ -745,13 +745,26 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   `jobs/ingest.py` chains the stages via the queue (`register_task`),
   idempotent against the ledger. reference mode stops at `settled` (Slice C).
   164 pipeline tests, ruff clean.
-- ⬜ **Slice B4 (NEXT) — EXTRACT + ITEMIZE:** metadata strategies (`raster_auto` via
-  rio-stac/pystac, sidecar XML/JSON parse, collection defaults); stac-pydantic
-  validation gate; **pypgstac** batched upsert (locked choice — pgstac schema is
-  image-owned, so this respects ADR 0001). New pipeline deps (rio-stac/pystac/
-  stac-pydantic/stac-validator/pypgstac) + GDAL in the Dockerfile + an ADR.
-  Re-ingest versioning (fingerprint change → new version, same `item_id`).
-  Evaluate rustac for bulk paths.
+- ✅ **Slice B4 — EXTRACT + ITEMIZE:** all three metadata strategies —
+  `raster_auto` (rio-stac/pystac over an in-memory `MemoryFile` read of the
+  primary raster), `sidecar` (XML via `defusedxml`, XXE/entity-expansion
+  hardened, or JSON via stdlib `json`), `defaults_only` (null-geometry item
+  from collection defaults). ITEMIZE validates every built item with the
+  **core** `stac_pydantic.Item` (offline, core-structural gate — not the API
+  variant, which requires a `root` link EXTRACT-built items don't carry), then
+  upserts via **pypgstac** `Loader.load_items(..., Methods.upsert)`, verified
+  to write item data only (`ON COMMIT DROP` staging tables + pgstac's own
+  upsert functions — no DDL, ADR-0001-compatible), then runs post-ingest
+  (`leave`/`delete`/`move:<path>`, non-fatal). New pipeline deps
+  (`rio-stac==0.12.0`, `pystac==1.15.1`, `rasterio>=1.5,<2`,
+  `defusedxml>=0.7.1`, `stac-pydantic==3.6.0`, `pypgstac[psycopg]==0.9.11`) —
+  rasterio's bundled-GDAL wheels mean **no system GDAL, no Dockerfile
+  change**. `docker-compose.yml`'s `pgstac` image pinned `:latest` → `v0.9.11`
+  to keep the pypgstac client and pgstac schema in lockstep. Re-ingest
+  versioning (fingerprint change → new version, same `item_id`) flows through
+  the ledger's existing `stored`→re-EXTRACT path. 201 pipeline unit tests +
+  a DB integration test (upsert → query → update, gated on `DATABASE_URL`).
+  ADR 0006. rustac evaluation for bulk paths still open.
 - ⬜ **Slice C — `storage_mode: reference`:** the `resolveAssetTarget` branch to
   the source href (persisted in `ingest_files`); not required by the done-when,
   so it lands last.
@@ -759,9 +772,13 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   live-verified** (2026-07-16): an S3/MinIO source file flowed poll → DISCOVER
   (seen → settled across two polls) → GROUP → FETCH into canonical storage
   (`assets/e2e-ingest-test/scene/scene.tif`), byte-identical (sha256 match),
-  ledger `stored`, idempotent across re-polls. Remaining for full B5: the
-  end-to-end assertion of a **queryable STAC item** (needs ITEMIZE, Slice B4)
-  and an SFTP/FTP source run (I-4).
+  ledger `stored`, idempotent across re-polls. **EXTRACT/ITEMIZE code is now in
+  place (Slice B4)**, but the queryable-item and changed→updated assertions
+  have **not yet been exercised live** — that run is a separate follow-up task
+  and this document will record its date once it happens. Remaining for full
+  B5: the live end-to-end assertion of a **queryable STAC item** through
+  EXTRACT/ITEMIZE, a changed-source-file → updated-item live assertion, and an
+  SFTP/FTP source run (I-4).
 - **Done when:** files dropped on a source connection appear as STAC items
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
