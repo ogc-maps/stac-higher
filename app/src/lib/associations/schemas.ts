@@ -54,6 +54,11 @@ export const metadataSchema = z
     defaults: z
       .object({
         datetime: z.string().min(1).optional(),
+        // Opt-in geometry fallback (ISSUE I-27): pgstac requires a non-null
+        // item geometry, so a strategy/best-effort GDAL read that still
+        // yields nothing can fall back to the collection's overall extent
+        // bbox instead of failing the item.
+        geometry: z.enum(["collection"]).optional(),
       })
       .strict()
       .default({}),

@@ -37,14 +37,20 @@ def _assoc(config: dict) -> IngestAssociation:
 
 
 class _FakeWriter(PgstacWriter):
-    def __init__(self, raise_missing: bool = False):
+    def __init__(self, raise_missing: bool = False, collection_bbox: list | None = None):
         self.items: list = []
         self.raise_missing = raise_missing
+        self.collection_bbox = collection_bbox
+        self.get_collection_bbox_calls: list[str] = []
 
     async def upsert_items(self, items):
         if self.raise_missing:
             raise CollectionMissing("Collection col is not present in the database")
         self.items.extend(items)
+
+    async def get_collection_bbox(self, collection_id):
+        self.get_collection_bbox_calls.append(collection_id)
+        return self.collection_bbox
 
 
 class _RaisingWriter(PgstacWriter):
@@ -56,6 +62,9 @@ class _RaisingWriter(PgstacWriter):
 
     async def upsert_items(self, items):
         raise RuntimeError("connection refused")
+
+    async def get_collection_bbox(self, collection_id):
+        return None
 
 
 def _valid_item():
@@ -84,13 +93,17 @@ def test_validate_item_rejects_missing_datetime():
 
 
 async def test_run_itemize_defaults_only_upserts_and_marks_itemized():
+    # scene.bin is not a GDAL-candidate, so this opts into the collection-
+    # extent fallback (ISSUE I-27) to reach a geometry; the default
+    # `_FakeWriter` returns no collection bbox, so it degrades to
+    # `global_fallback` — this test only cares about the itemize/upsert path.
     repo = FakeIngestRepo()
     assoc = _assoc(
         {
             "source_path": "/out",
             "metadata": {
                 "strategy": "defaults_only",
-                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
             },
         }
     )
@@ -161,13 +174,17 @@ async def test_run_itemize_marks_all_members_atomically():
     # item_id set together, via a single set_ledger_status_many call — not two
     # independent set_ledger_fields calls that could leave the group split if
     # the process crashed between them.
+    # Opts into the collection-extent fallback (ISSUE I-27): scene.tif is a
+    # GDAL-candidate, but `FakeS3` here has no bytes for it (it only models
+    # the FETCH-stage `put_object` calls), so best-effort recovery misses and
+    # this falls through to the opted-in `global_fallback`.
     repo = FakeIngestRepo()
     assoc = _assoc(
         {
             "source_path": "/out",
             "metadata": {
                 "strategy": "defaults_only",
-                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
             },
         }
     )
@@ -239,7 +256,7 @@ async def test_run_itemize_propagates_unexpected_writer_error():
             "source_path": "/out",
             "metadata": {
                 "strategy": "defaults_only",
-                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
             },
         }
     )
@@ -268,3 +285,119 @@ async def test_run_itemize_propagates_unexpected_writer_error():
     # item; leaving it at `stored` lets the job retry cleanly.
     row = await repo.get_latest_ledger(assoc.id, "scene.bin")
     assert row.status == STATUS_STORED
+
+
+async def test_run_itemize_defaults_only_opted_in_uses_collection_extent():
+    # `.bin` is not a GDAL-candidate, so only the opt-in collection-extent
+    # fallback (ISSUE I-27) can recover a geometry here.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter(collection_bbox=[10, 20, 30, 40])
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    assert writer.get_collection_bbox_calls == ["col"]
+    item = writer.items[0]
+    assert item["geometry"] is not None
+    assert item["bbox"] == [10, 20, 30, 40]
+    assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_ITEMIZED
+
+
+async def test_run_itemize_defaults_only_opted_in_no_collection_extent_uses_global():
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter(collection_bbox=None)
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    item = writer.items[0]
+    assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_ITEMIZED
+
+
+async def test_run_itemize_defaults_only_not_opted_in_fails_without_geometry():
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter()
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out.status == "failed"
+    assert writer.items == []
+    assert writer.get_collection_bbox_calls == []
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_FAILED

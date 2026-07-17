@@ -18,7 +18,14 @@ from typing import Any
 
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import IngestConfig
-from pipeline.ingest.extract import ExtractError, ExtractMember, build_item
+from pipeline.ingest.extract import (
+    ExtractError,
+    ExtractMember,
+    MetadataConfig,
+    bbox_to_polygon,
+    build_item,
+    parse_metadata,
+)
 from pipeline.ingest.postingest import apply_post_ingest
 from pipeline.ingest.repo import (
     STATUS_FAILED,
@@ -33,6 +40,36 @@ from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
 logger = logging.getLogger(__name__)
+
+#: A bbox equal to (within this tolerance) the whole world is treated as "no
+#: real extent" — the collection fallback then degrades to `global_fallback`
+#: rather than claiming a bogus worldwide footprint as `collection_extent`.
+_WORLD_BBOX = [-180.0, -90.0, 180.0, 90.0]
+_GLOBAL_BBOX_EPSILON = 1e-6
+
+
+def _is_global_bbox(bbox: Sequence[float]) -> bool:
+    return all(abs(v - w) < _GLOBAL_BBOX_EPSILON for v, w in zip(bbox, _WORLD_BBOX, strict=True))
+
+
+async def _build_collection_fallback(
+    writer: PgstacWriter, association: IngestAssociation, cfg: MetadataConfig
+) -> dict[str, Any] | None:
+    """The ISSUE I-27 opt-in collection-extent geometry fallback: only
+    consulted when the association's metadata.defaults.geometry is
+    `"collection"`. Degrades to a `global_fallback` world polygon when the
+    collection has no usable (non-global) extent."""
+    if cfg.default_geometry != "collection":
+        return None
+    bbox = await writer.get_collection_bbox(association.collection_id)
+    if not bbox or len(bbox) < 4 or _is_global_bbox(bbox):
+        return {
+            "geometry": bbox_to_polygon(_WORLD_BBOX),
+            "bbox": list(_WORLD_BBOX),
+            "source": "global_fallback",
+        }
+    bbox = list(bbox[:4])
+    return {"geometry": bbox_to_polygon(bbox), "bbox": bbox, "source": "collection_extent"}
 
 
 class ItemValidationError(Exception):
@@ -107,7 +144,11 @@ async def run_itemize(
 
     members = [_member(e, association.collection_id, item_id) for e in stored]
 
-    # EXTRACT
+    # EXTRACT (ISSUE I-27: opt in to the collection-extent geometry fallback
+    # only when metadata.defaults.geometry == "collection" — the writer is
+    # otherwise never consulted for this).
+    cfg = parse_metadata(config.metadata)
+    collection_fallback = await _build_collection_fallback(writer, association, cfg)
     try:
         item_dict = await build_item(
             collection_id=association.collection_id,
@@ -117,6 +158,7 @@ async def run_itemize(
             s3_client=s3_client,
             bucket=bucket,
             asset_href_base=asset_href_base,
+            collection_fallback=collection_fallback,
         )
     except ExtractError as exc:
         await _mark(repo, stored, STATUS_FAILED, None)

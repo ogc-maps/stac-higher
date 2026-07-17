@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import math
 import posixpath
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,11 @@ MEDIA_TYPES: dict[str, str] = {
     ".xml": "application/xml",
 }
 RASTER_EXTS = frozenset({".tif", ".tiff", ".jp2", ".png", ".jpg", ".jpeg"})
+#: Best-effort GDAL open (ISSUE I-27) also covers gridded/scientific formats
+#: GDAL can read but that raster_auto/sidecar don't otherwise target.
+GDAL_CANDIDATE_EXTS = RASTER_EXTS | frozenset(
+    {".nc", ".nc4", ".grib", ".grib2", ".grb", ".zarr", ".hdf", ".h5", ".vrt", ".img"}
+)
 
 
 class ExtractError(ValueError):
@@ -70,6 +76,10 @@ class MetadataConfig:
     sidecar_pattern: str | None
     sidecar_parser: str
     default_datetime: str | None
+    #: `"collection"` opts into the collection-extent geometry fallback
+    #: (ISSUE I-27); any other/absent value is treated as unset (forward-
+    #: compatible — don't raise on a value a newer app might send).
+    default_geometry: str | None
 
 
 def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
@@ -79,11 +89,15 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
     strategy = str(raw.get("strategy", "raster_auto"))
     if strategy not in ("raster_auto", "sidecar", "defaults_only"):
         raise ExtractError(f"unknown metadata.strategy {strategy!r}")
+    default_geometry = defaults.get("geometry")
+    if default_geometry != "collection":
+        default_geometry = None
     return MetadataConfig(
         strategy=strategy,
         sidecar_pattern=sidecar.get("pattern"),
         sidecar_parser=str(sidecar.get("parser", "generic_xml")),
         default_datetime=defaults.get("datetime"),
+        default_geometry=default_geometry,
     )
 
 
@@ -94,6 +108,10 @@ def media_type_for(filename: str) -> str:
 
 def is_raster(filename: str) -> bool:
     return posixpath.splitext(filename)[1].lower() in RASTER_EXTS
+
+
+def is_gdal_candidate(filename: str) -> bool:
+    return posixpath.splitext(filename)[1].lower() in GDAL_CANDIDATE_EXTS
 
 
 def _parse_rfc3339(value: str) -> dt.datetime:
@@ -225,6 +243,77 @@ def bbox_from_geometry(geom: dict[str, Any]) -> list[float]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+def bbox_to_polygon(bbox: list[float]) -> dict[str, Any]:
+    """Axis-aligned Polygon geojson from a ``[w, s, e, n]`` bbox."""
+    w, s, e, n = bbox
+    return {
+        "type": "Polygon",
+        "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]],
+    }
+
+
+def _raster_crs_and_bounds(ds: Any) -> tuple[Any, Any]:
+    """CRS + bounds for an opened rasterio dataset, or ``(None, None)`` if it
+    isn't georeferenced. Falls through to the first subdataset for container
+    formats (netCDF/HDF/GRIB) whose top-level dataset lacks its own CRS."""
+    if ds.crs is not None and ds.transform is not None and not ds.transform.is_identity:
+        return ds.crs, ds.bounds
+    subdatasets = getattr(ds, "subdatasets", None) or []
+    if subdatasets:
+        import rasterio
+
+        with rasterio.open(subdatasets[0]) as sub:
+            if sub.crs is not None and sub.transform is not None:
+                return sub.crs, sub.bounds
+    return None, None
+
+
+def geometry_from_raster(data: bytes) -> tuple[dict[str, Any], list[float]] | None:
+    """Best-effort GDAL open of arbitrary raster/gridded bytes (COG, GeoTIFF,
+    netCDF, GRIB, ...) — returns ``(geometry, bbox)`` reprojected to
+    EPSG:4326, or ``None`` if the bytes can't be opened or georeferenced.
+    Never raises (ISSUE I-27 best-effort layer). ``rasterio`` is imported
+    lazily so this module stays GDAL-free at import time.
+    """
+    import rasterio
+    from rasterio.warp import transform_bounds
+
+    crs = bounds = None
+    try:
+        with rasterio.io.MemoryFile(data) as mem, mem.open() as ds:
+            crs, bounds = _raster_crs_and_bounds(ds)
+    except Exception:
+        crs = bounds = None
+
+    if crs is None:
+        # Some HDF-backed netCDF/GRIB files can't be opened from /vsimem —
+        # spill to a real temp file and retry (verified feasibility finding).
+        import tempfile
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".tmp") as tmp:
+                tmp.write(data)
+                tmp.flush()
+                with rasterio.open(tmp.name) as ds:
+                    crs, bounds = _raster_crs_and_bounds(ds)
+        except Exception:
+            crs = bounds = None
+
+    if crs is None or bounds is None:
+        return None
+
+    try:
+        w, s, e, n = transform_bounds(crs, "EPSG:4326", *bounds, densify_pts=21)
+    except Exception:
+        return None
+
+    if not all(math.isfinite(v) for v in (w, s, e, n)) or w >= e or s >= n:
+        return None
+
+    bbox = [w, s, e, n]
+    return bbox_to_polygon(bbox), bbox
+
+
 def build_sidecar(
     collection_id: str,
     item_id: str,
@@ -255,6 +344,7 @@ def build_sidecar(
         item.pop("bbox", None)  # keep null geometry without a bbox
     else:
         item["bbox"] = bbox_from_geometry(parsed["geometry"])
+        item["properties"]["stac_higher:geometry_source"] = "sidecar"
     return item
 
 
@@ -341,7 +431,59 @@ def build_raster_auto(
                 roles=["metadata"],
             ),
         )
+    if item.geometry is not None:
+        item.properties["stac_higher:geometry_source"] = "raster"
     return item.to_dict(include_self_link=False, transform_hrefs=False)
+
+
+async def _best_effort_raster_geometry(
+    primary: ExtractMember, s3_client: platform.S3Like, bucket: str
+) -> tuple[dict[str, Any], list[float]] | None:
+    """Best-effort GDAL open of the primary member (ISSUE I-27 layer 2) — only
+    attempted for a GDAL-candidate extension, and never raises (an unreadable
+    or missing object just means "no geometry recovered")."""
+    if not is_gdal_candidate(primary.filename):
+        return None
+    try:
+        data = await asyncio.to_thread(
+            platform.get_object, s3_client, bucket, primary.canonical_key
+        )
+    except Exception:
+        return None
+    return geometry_from_raster(data)
+
+
+async def _resolve_geometry_fallback(
+    item: dict[str, Any],
+    members: list[ExtractMember],
+    *,
+    s3_client: platform.S3Like,
+    bucket: str,
+    collection_fallback: dict[str, Any] | None,
+) -> None:
+    """Layers 2-4 of the ISSUE I-27 resolution order: best-effort GDAL open,
+    then the opt-in collection-extent fallback, then fail-fast. Mutates
+    ``item`` in place (geometry/bbox/provenance) or raises ``ExtractError``.
+    """
+    primary = _primary(members)
+    recovered = await _best_effort_raster_geometry(primary, s3_client, bucket)
+    if recovered is not None:
+        geometry, bbox = recovered
+        item["geometry"] = geometry
+        item["bbox"] = bbox
+        item["properties"]["stac_higher:geometry_source"] = "raster"
+        return
+
+    if collection_fallback is not None:
+        item["geometry"] = collection_fallback["geometry"]
+        item["bbox"] = collection_fallback["bbox"]
+        item["properties"]["stac_higher:geometry_source"] = collection_fallback["source"]
+        return
+
+    raise ExtractError(
+        f"no geometry could be resolved for item {item['id']!r}: no strategy geometry, "
+        "no best-effort GDAL read, and no collection-extent fallback opted in (ISSUE I-27)"
+    )
 
 
 async def build_item(
@@ -353,32 +495,47 @@ async def build_item(
     s3_client: platform.S3Like,
     bucket: str,
     asset_href_base: str,
+    collection_fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch on metadata.strategy, reading member bytes from canonical storage
-    only when the strategy needs them."""
+    only when the strategy needs them. If the strategy leaves the item with a
+    null geometry, falls through the ISSUE I-27 resolution chain (best-effort
+    GDAL open → opt-in collection-extent fallback → fail-fast) rather than
+    emitting a null-geometry item, which pgstac rejects."""
     if not members:
         raise ExtractError("no members to itemize")
     cfg = parse_metadata(metadata)
 
     if cfg.strategy == "defaults_only":
-        return build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
-
-    if cfg.strategy == "sidecar":
+        item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
+    elif cfg.strategy == "sidecar":
         sidecar = _match_sidecar(members, cfg)
         data = await asyncio.to_thread(
             platform.get_object, s3_client, bucket, sidecar.canonical_key
         )
-        return build_sidecar(collection_id, item_id, members, cfg, data, asset_href_base)
+        item = build_sidecar(collection_id, item_id, members, cfg, data, asset_href_base)
+    else:
+        # raster_auto
+        primary = _primary(members)
+        if not is_raster(primary.filename):
+            # No raster to read via rio-stac — fall through to the same
+            # null-geometry base as defaults_only, then the resolution chain.
+            item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
+        else:
+            data = await asyncio.to_thread(
+                platform.get_object, s3_client, bucket, primary.canonical_key
+            )
+            item = build_raster_auto(collection_id, item_id, members, cfg, data, asset_href_base)
 
-    # raster_auto
-    primary = _primary(members)
-    if not is_raster(primary.filename):
-        # No raster to read — fall back to a null-geometry item.
-        return build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
-    data = await asyncio.to_thread(
-        platform.get_object, s3_client, bucket, primary.canonical_key
-    )
-    return build_raster_auto(collection_id, item_id, members, cfg, data, asset_href_base)
+    if item.get("geometry") is None:
+        await _resolve_geometry_fallback(
+            item,
+            members,
+            s3_client=s3_client,
+            bucket=bucket,
+            collection_fallback=collection_fallback,
+        )
+    return item
 
 
 def _match_sidecar(members: list[ExtractMember], cfg: MetadataConfig) -> ExtractMember:
