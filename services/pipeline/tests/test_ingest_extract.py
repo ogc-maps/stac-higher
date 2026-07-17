@@ -6,8 +6,10 @@ from pipeline.ingest.extract import (
     ExtractError,
     ExtractMember,
     build_defaults_only,
+    build_sidecar,
     media_type_for,
     parse_metadata,
+    parse_sidecar,
     resolve_datetime,
 )
 
@@ -85,3 +87,40 @@ def test_build_defaults_only_null_geometry_item():
     assert item["properties"]["datetime"] == "2021-06-01T00:00:00Z"
     assert item["assets"]["scene"]["href"] == "/api/assets/col/scene/scene.tif"
     assert item["assets"]["scene"]["type"] == "image/tiff; application=geotiff"
+
+
+_XML = b"""<?xml version="1.0"?>
+<product><acquired>2023-05-05T10:00:00Z</acquired></product>"""
+
+_XXE = b"""<?xml version="1.0"?>
+<!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]>
+<product><acquired>2023-05-05T10:00:00Z</acquired>&x;</product>"""
+
+
+def test_parse_sidecar_json_datetime():
+    out = parse_sidecar(b'{"datetime": "2023-05-05T10:00:00Z"}', "json")
+    assert out["datetime"] == dt.datetime(2023, 5, 5, 10, tzinfo=dt.UTC)
+
+
+def test_parse_sidecar_generic_xml_datetime():
+    out = parse_sidecar(_XML, "generic_xml")
+    assert out["datetime"] == dt.datetime(2023, 5, 5, 10, tzinfo=dt.UTC)
+
+
+def test_parse_sidecar_xml_is_xxe_safe():
+    # defusedxml forbids DOCTYPE entities → parse is blocked, surfaced as
+    # ExtractError. The local file is never read.
+    with pytest.raises(ExtractError):
+        parse_sidecar(_XXE, "generic_xml")
+
+
+def test_build_sidecar_uses_extracted_datetime():
+    members = [
+        _member("scene.tif"),
+        ExtractMember("products/scene.xml", "scene.xml", "assets/col/scene/scene.xml", None),
+    ]
+    cfg = parse_metadata({"strategy": "sidecar", "sidecar": {"pattern": "{basename}.xml"}})
+    item = build_sidecar("col", "scene", members, cfg, _XML, "/api/assets")
+    assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
+    assert set(item["assets"]) == {"scene"}  # both members, keyed by stem
+    assert item["assets"]["scene"]["roles"] == ["data"]

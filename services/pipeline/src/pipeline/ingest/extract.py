@@ -13,9 +13,17 @@ bad item.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import posixpath
 from dataclasses import dataclass
 from typing import Any
+from xml.etree.ElementTree import Element, ParseError  # types only
+
+# defusedxml hardens against XXE + entity-expansion DoS (billion-laughs /
+# quadratic-blowup) that stdlib xml.etree does NOT defend against. Required by
+# the FISMA-High posture — never swap this back to stdlib.
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring as _xml_fromstring
 
 from pipeline.storage.keys import asset_href
 
@@ -120,11 +128,15 @@ def build_assets(
     primary_filename: str,
 ) -> dict[str, dict[str, Any]]:
     """One asset per member, keyed by filename stem; primary gets role `data`,
-    others `metadata`. Hrefs point at the app asset route."""
+    others `metadata`. Hrefs point at the app asset route. On a stem collision
+    (e.g. a raster and its sidecar sharing a basename), the `data` entry always
+    wins, regardless of member order."""
     assets: dict[str, dict[str, Any]] = {}
     for m in members:
         key = posixpath.splitext(m.filename)[0]
         role = "data" if m.filename == primary_filename else "metadata"
+        if assets.get(key, {}).get("roles") == ["data"] and role != "data":
+            continue
         assets[key] = {
             "href": asset_href(collection_id, item_id, m.filename, base=asset_href_base),
             "type": media_type_for(m.filename),
@@ -138,6 +150,76 @@ def _primary(members: list[ExtractMember]) -> ExtractMember:
         if is_raster(m.filename):
             return m
     return members[0]
+
+
+def _find_datetime_in_xml(root: Element) -> dt.datetime | None:
+    # Look for a small set of common date-ish tags (namespace-agnostic: compare
+    # local tag names). Minimal MVP field set — richer mapping is a follow-up.
+    wanted = {"datetime", "acquired", "date", "acquisitiondate", "start_datetime"}
+    for el in root.iter():
+        local = el.tag.rsplit("}", 1)[-1].lower()
+        if local in wanted and el.text and el.text.strip():
+            try:
+                return _parse_rfc3339(el.text.strip())
+            except ValueError:
+                continue
+    return None
+
+
+def parse_sidecar(data: bytes, parser: str) -> dict[str, Any]:
+    """Extract a minimal field set from a sidecar. XXE-safe: the stdlib XML
+    parser does not resolve external entities, and a DOCTYPE with entities is
+    rejected."""
+    if parser == "json":
+        try:
+            doc = json.loads(data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ExtractError(f"sidecar JSON parse failed: {exc}") from exc
+        when = doc.get("datetime")
+        return {
+            "datetime": _parse_rfc3339(when) if isinstance(when, str) else None,
+            "geometry": doc.get("geometry"),
+            "properties": doc.get("properties") or {},
+        }
+    if parser == "generic_xml":
+        try:
+            root = _xml_fromstring(data)
+        except (ParseError, DefusedXmlException) as exc:
+            # DefusedXmlException = DOCTYPE/entity/external-ref blocked (XXE/DoS).
+            raise ExtractError(f"sidecar XML parse failed/blocked: {exc}") from exc
+        return {"datetime": _find_datetime_in_xml(root), "geometry": None, "properties": {}}
+    raise ExtractError(f"unknown sidecar parser {parser!r}")
+
+
+def build_sidecar(
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    cfg: MetadataConfig,
+    sidecar_bytes: bytes,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    if not members:
+        raise ExtractError("no members to itemize")
+    primary = _primary(members)
+    parsed = parse_sidecar(sidecar_bytes, cfg.sidecar_parser)
+    when = resolve_datetime(parsed["datetime"], cfg, primary)
+    item: dict[str, Any] = {
+        "type": "Feature",
+        "stac_version": STAC_VERSION,
+        "stac_extensions": [],
+        "id": item_id,
+        "collection": collection_id,
+        "geometry": parsed["geometry"],
+        "properties": {**parsed["properties"], "datetime": _rfc3339(when)},
+        "assets": build_assets(
+            members, collection_id, item_id, asset_href_base, primary.filename
+        ),
+        "links": [],
+    }
+    if parsed["geometry"] is None:
+        item.pop("bbox", None)  # keep null geometry without a bbox
+    return item
 
 
 def build_defaults_only(
