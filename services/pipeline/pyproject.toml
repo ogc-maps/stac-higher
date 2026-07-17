@@ -13,6 +13,12 @@ dependencies = [
     "asyncssh>=2.24.0",
     "aioftp>=0.27.2",
     "boto3>=1.43.49",
+    "rio-stac==0.12.0",
+    "pystac==1.15.1",
+    "rasterio>=1.5,<2",
+    "stac-pydantic==3.6.0",
+    "pypgstac[psycopg]==0.9.11",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
@@ -52,3 +58,6 @@ select = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.uv]
+no-build-package = ["rasterio"]

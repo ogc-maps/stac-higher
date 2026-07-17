@@ -2,7 +2,7 @@ name: stac-higher
 
 services:
   database:
-    image: ghcr.io/stac-utils/pgstac:latest
+    image: ghcr.io/stac-utils/pgstac:v0.9.11
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASSWORD=password
