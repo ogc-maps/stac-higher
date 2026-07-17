@@ -69,7 +69,7 @@ no-build-package = ["rasterio"]
 ```
 
 Then `uv lock`. `pyproj` is **not** added (rasterio's bundled GDAL already ships
-PROJ; sidecar parsing uses stdlib only).
+PROJ; sidecar XML parsing uses `defusedxml`, JSON uses stdlib).
 
 **Dockerfile:** no changes. rasterio 1.5 wheels bundle GDAL 3.12.1 + its full
 dep stack into `rasterio.libs/` inside the `.venv`; `UV_LINK_MODE=copy` means the
@@ -145,8 +145,9 @@ GDAL `/vsis3` + MinIO endpoint configuration (no `AWS_S3_ENDPOINT`/
   hrefs.
 - **`sidecar`** — locate the sidecar member by `metadata.sidecar.pattern`
   (e.g. `{basename}.xml`) relative to the primary; parse with the configured
-  `parser`: `generic_xml` via stdlib `xml.etree.ElementTree` (XXE-safe — no
-  external entity resolution), `json` via stdlib `json`. Extract
+  `parser`: `generic_xml` via **`defusedxml`** (hardened against XXE *and*
+  entity-expansion DoS — stdlib `xml.etree` fully defends against neither;
+  required by the FISMA-High posture), `json` via stdlib `json`. Extract
   datetime/geometry/select properties (a documented, minimal field set for the
   MVP — datetime is the required one; geometry optional). Assets for all
   members. If both a raster and a sidecar are present, `sidecar` values take
