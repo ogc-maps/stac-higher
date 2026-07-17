@@ -97,6 +97,6 @@ The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapte
 ROADMAP §7 grants "associate connections ↔ collections" to **member**, but the mutation guard (`matchGatedRoute` → `canMutate`) is binary operator|admin, so association create/edit/delete requires operator+. Reads (list/detail) are open to any authenticated caller who can see the row. A per-route role floor (member for associate, operator for connection CRUD) is the eventual refinement.
 - Tracked in: `app/src/lib/authz/permissions.ts`, `app/src/lib/associations/access.ts`.
 
-### I-19 · Adapter `list` lacks size/mtime; `get` fully buffers (Slice B) ⚪
-The DISCOVER settled-check needs per-file size/mtime, which `StorageAdapter.list()` currently drops, and FETCH of large assets needs streaming, which `get() -> bytes` doesn't provide. Slice B enriches `list` (required for the settled-check) and defers true streaming FETCH (buffered `get→put_object` works for local/small assets); the large-asset streaming gap is logged then.
+### I-19 · Adapter `get` fully buffers large assets (streaming deferred) ⚪
+The list-metadata half is **done (Slice B1)**: `StorageAdapter.list()` now returns `FileEntry` with size/mtime/etag, which the DISCOVER settled-check needs. The remaining gap: `get() -> bytes` buffers the whole object in memory, so FETCH of multi-GB assets is unsafe at envelope scale. Copy-mode FETCH (Slice B2+B3) uses buffered `get → put_object`, which is fine for local/small assets; true streaming (a streaming read + S3 multipart upload) is deferred and logged here.
 - Tracked in: here; `services/pipeline/.../adapters/base.py`.

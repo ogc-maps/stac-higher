@@ -89,7 +89,7 @@ No new tables: the asset route derives keys from URL params; uploads derive from
 
 ## Phase 4 — Ingest pipeline 🚧
 
-Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) is done**; the pipeline ingest chain (Slice B) and `storage_mode: reference` wiring (Slice C) are pending.
+Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) done**; **Slice B (pipeline ingest chain) in progress** — **B1 (adapter list-metadata + `build_adapter`) done**, B2+B3 (ingest repo + scheduler + DISCOVER/GROUP/FETCH) is the next unit, then B4 (EXTRACT/ITEMIZE); `storage_mode: reference` (Slice C) pending.
 
 | Feature | Status | Entry points |
 |---|---|---|
@@ -97,10 +97,12 @@ Poll-based ingest of files from source connections into built-in-catalog collect
 | Ingest `config` Zod schema (§5.1) | ✅ | `app/src/lib/associations/schemas.ts` — cross-runtime contract (source_path, include/exclude, poll_frequency, storage_mode, grouping, metadata, post_ingest); nested defaults filled via function-defaults |
 | Association CRUD API | ✅ | `GET/POST /api/collections/[id]/connections`, `GET/PUT/DELETE /api/collections/[id]/connections/[assocId]` — operator+ gated & audited; group ownership enforced in-route; `reference` mode restricted to s3 connections; duplicate (collection,connection,direction) → 409 |
 | Data-flow tab (ingest half) | ✅ | `app/src/components/collections/DataFlowTab.tsx`, wired into `CollectionDetail.tsx` (built-in catalog only): add/edit ingest sources, enable/disable, remove |
-| Pipeline ingest chain (DISCOVER→…→ITEMIZE) | ⬜ | Slice B — scheduler + batch job chain, `raster_auto`/sidecar EXTRACT, stac-pydantic validate, **pypgstac** upsert; enriched adapter `list` metadata; copy-mode FETCH |
-| `storage_mode: reference` | ⬜ | Slice C — `resolveAssetTarget` branch to source href (persisted in `ingest_files`) |
+| Adapter list-metadata + `build_adapter` (Slice B1) | ✅ | `services/pipeline/.../adapters/*` `list()` → `FileEntry` (path/size/mtime/etag/is_dir) across s3/sftp/ftp; `connections/build.py::build_adapter` (decrypt→adapter seam the ingest workers consume); `probe` refactored onto it |
+| Ingest repo + scheduler + DISCOVER/GROUP/FETCH (Slice B2+B3) | ⬜ | **next unit** — `IngestRepo` (+ FakeRepo) mirroring `connections/repo.py`; `ingest_poll` scheduler; settled-check (unchanged size/fingerprint across 2 polls); grouping; copy-mode FETCH (buffered `get` → platform `put_object` at `assets/{collection}/{item}/{filename}`) |
+| EXTRACT + ITEMIZE (Slice B4) | ⬜ | `raster_auto` (rio-stac/pystac) + sidecar → stac-pydantic validate → **pypgstac** batched upsert; new pipeline deps + GDAL Dockerfile + an ADR |
+| `storage_mode: reference` (Slice C) | ⬜ | `resolveAssetTarget` branch to source href (persisted in `ingest_files`) |
 
-No new client deps in Slice A. Decisions: [ADR 0001 — migration ownership](decisions/0001-migration-ownership.md). Residuals in [`ISSUES.md`](ISSUES.md) (I-17, I-18).
+No new client deps in Slice A. Slice B1 added no deps (adapter-internal). Decisions: [ADR 0001 — migration ownership](decisions/0001-migration-ownership.md). Residuals in [`ISSUES.md`](ISSUES.md) (I-17, I-18, I-19).
 
 ---
 
