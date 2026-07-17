@@ -25,7 +25,6 @@ import logging
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import IngestConfig
 from pipeline.ingest.discover import source_fetch_path
-from pipeline.ingest.group import ReadyGroup
 from pipeline.ingest.repo import (
     STATUS_FAILED,
     STATUS_FETCHING,
@@ -47,34 +46,38 @@ async def fetch_stage(
     adapter: StorageAdapter,
     s3_client: platform.S3Like,
     bucket: str,
-    group: ReadyGroup,
+    item_id: str,
+    source_paths: list[str],
 ) -> int:
-    """Copy a group's settled members into canonical storage. Returns count stored."""
+    """Copy a group's settled files into canonical storage. Returns count stored.
+
+    Takes the primitives that cross the queue (``item_id`` + source paths) and
+    reloads each file's current ledger row itself — the stage is the single
+    source of truth for the latest row, so callers need not preload it.
+    """
     if config.storage_mode == "reference":
         logger.info(
             "ingest fetch: reference mode deferred to Slice C — skipping copy",
-            extra={"association_id": association.id, "item_id": group.item_id},
+            extra={"association_id": association.id, "item_id": item_id},
         )
         return 0
 
     stored = 0
-    for member in group.members:
+    for source_path in source_paths:
         # Re-read: only fetch a row that is still settled (idempotent guard).
-        latest = await repo.get_latest_ledger(association.id, member.source_path)
+        latest = await repo.get_latest_ledger(association.id, source_path)
         if latest is None or latest.status != STATUS_SETTLED:
             continue
-        await repo.set_ledger_fields(
-            latest.id, status=STATUS_FETCHING, item_id=group.item_id
-        )
+        await repo.set_ledger_fields(latest.id, status=STATUS_FETCHING, item_id=item_id)
         try:
-            fetch_path = source_fetch_path(config.source_path, member.source_path)
+            fetch_path = source_fetch_path(config.source_path, source_path)
             data = await adapter.get(fetch_path)
             checksum = hashlib.sha256(data).hexdigest()
-            filename = member.source_path.rsplit("/", 1)[-1]
-            key = canonical_asset_key(association.collection_id, group.item_id, filename)
+            filename = source_path.rsplit("/", 1)[-1]
+            key = canonical_asset_key(association.collection_id, item_id, filename)
             await asyncio.to_thread(platform.put_object, s3_client, bucket, key, data)
             await repo.set_ledger_fields(
-                latest.id, status=STATUS_STORED, checksum=checksum, item_id=group.item_id
+                latest.id, status=STATUS_STORED, checksum=checksum
             )
             stored += 1
         except Exception:
@@ -83,17 +86,17 @@ async def fetch_stage(
                 "ingest fetch failed for source file",
                 extra={
                     "association_id": association.id,
-                    "item_id": group.item_id,
-                    "source_path": member.source_path,
+                    "item_id": item_id,
+                    "source_path": source_path,
                 },
             )
     logger.info(
         "ingest fetch group done",
         extra={
             "association_id": association.id,
-            "item_id": group.item_id,
+            "item_id": item_id,
             "stored": stored,
-            "members": len(group.members),
+            "files": len(source_paths),
         },
     )
     return stored

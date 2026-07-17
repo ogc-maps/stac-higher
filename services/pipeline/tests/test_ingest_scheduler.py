@@ -35,7 +35,6 @@ def _assoc(assoc_id: str, config: dict, *, enabled=True) -> IngestAssociation:
     return IngestAssociation(
         id=assoc_id,
         collection_id="coll",
-        connection_id="c",
         config=config,
         connection=conn,
         enabled=enabled,

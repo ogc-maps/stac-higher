@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.connections.repo import ConnectionRow
+from pipeline.connections.repo import ConnectionRow, _to_connection_row
 
 # ledger statuses (mirrors the migration-005 CHECK constraint).
 STATUS_SEEN = "seen"
@@ -39,12 +39,12 @@ class IngestAssociation:
 
     ``config`` is the raw §5.1 jsonb (parsed by :func:`ingest.config.parse_ingest_config`
     at the stage boundary). ``connection`` is embedded so a stage can build the
-    adapter (``build_adapter``) without a second query.
+    adapter (``build_adapter``) without a second query — the connection id is
+    ``connection.id``, not a separate field.
     """
 
     id: str
     collection_id: str
-    connection_id: str
     config: dict[str, Any]
     connection: ConnectionRow
     enabled: bool = True
@@ -126,7 +126,7 @@ class IngestRepo(abc.ABC):
 # psycopg implementation
 # --------------------------------------------------------------------------- #
 
-_ASSOC_COLUMNS = "cc.id, cc.collection_id, cc.connection_id, cc.config, cc.enabled"
+_ASSOC_COLUMNS = "cc.id, cc.collection_id, cc.config, cc.enabled"
 _CONNECTION_COLUMNS = "c.id, c.name, c.protocol, c.config, c.credentials, c.host_key, c.enabled"
 _LEDGER_COLUMNS = (
     "id, association_id, source_path, version, size, fingerprint, checksum,"
@@ -134,19 +134,6 @@ _LEDGER_COLUMNS = (
 )
 #: mutable ledger columns settable through set_ledger_fields (guards SQL building).
 _LEDGER_MUTABLE = frozenset({"status", "size", "fingerprint", "checksum", "item_id"})
-
-
-def _to_connection_row(record: Sequence[Any]) -> ConnectionRow:
-    cid, name, protocol, config, credentials, host_key, enabled = record
-    return ConnectionRow(
-        id=str(cid),
-        name=name,
-        protocol=protocol,
-        config=dict(config) if config else {},
-        credentials=bytes(credentials) if credentials is not None else None,
-        host_key=host_key,
-        enabled=bool(enabled),
-    )
 
 
 def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
@@ -218,12 +205,11 @@ class PgIngestRepo(IngestRepo):
 
     @staticmethod
     def _row_to_association(record: Sequence[Any]) -> IngestAssociation:  # pragma: no cover
-        assoc, connection = record[:5], record[5:]
-        cc_id, collection_id, connection_id, config, enabled = assoc
+        assoc, connection = record[:4], record[4:]
+        cc_id, collection_id, config, enabled = assoc
         return IngestAssociation(
             id=str(cc_id),
             collection_id=collection_id,
-            connection_id=str(connection_id),
             config=dict(config) if config else {},
             connection=_to_connection_row(connection),
             enabled=bool(enabled),

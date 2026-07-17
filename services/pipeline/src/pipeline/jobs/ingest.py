@@ -15,11 +15,11 @@ import logging
 
 from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
-from pipeline.ingest.config import parse_ingest_config
+from pipeline.ingest.config import IngestConfig, parse_ingest_config
 from pipeline.ingest.discover import discover_stage
 from pipeline.ingest.fetch import fetch_stage
-from pipeline.ingest.group import ReadyGroup, group_stage
-from pipeline.ingest.repo import PgIngestRepo
+from pipeline.ingest.group import group_stage
+from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.ingest.scheduler import due_associations
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.queue.interface import QueueBackend
@@ -32,6 +32,18 @@ JOB_DISCOVER = "pipeline.ingest_discover"
 JOB_GROUP = "pipeline.ingest_group"
 JOB_FETCH = "pipeline.ingest_fetch"
 CRON = "* * * * *"
+
+
+async def _load_association(
+    settings: Settings, association_id: str
+) -> tuple[PgIngestRepo, IngestAssociation, IngestConfig] | None:
+    """Open a repo and load the enabled association + parsed config, or ``None``
+    when the stage arrives after the association was disabled/deleted."""
+    repo = PgIngestRepo(settings.database_url)
+    association = await repo.get_association(association_id)
+    if association is None:
+        return None
+    return repo, association, parse_ingest_config(association.config)
 
 
 def register(queue: QueueBackend, settings: Settings) -> None:
@@ -52,11 +64,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         master_key = load_key_or_skip(settings, JOB_DISCOVER)
         if master_key is None:
             return
-        repo = PgIngestRepo(settings.database_url)
-        association = await repo.get_association(association_id)
-        if association is None:
+        loaded = await _load_association(settings, association_id)
+        if loaded is None:
             return
-        config = parse_ingest_config(association.config)
+        repo, association, config = loaded
         adapter = build_adapter(
             association.connection, master_key, settings.egress_allow_hosts
         )
@@ -66,14 +77,11 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         await queue.enqueue(JOB_GROUP, {"association_id": association_id})
 
     async def group(association_id: str) -> None:
-        repo = PgIngestRepo(settings.database_url)
-        association = await repo.get_association(association_id)
-        if association is None:
+        loaded = await _load_association(settings, association_id)
+        if loaded is None:
             return
-        config = parse_ingest_config(association.config)
-        result = await group_stage(
-            repo, association_id, config, dt.datetime.now(dt.UTC)
-        )
+        repo, association, config = loaded
+        result = await group_stage(repo, association.id, config, dt.datetime.now(dt.UTC))
         if not result.ready:
             return
         await queue.enqueue_batch(
@@ -92,23 +100,23 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         master_key = load_key_or_skip(settings, JOB_FETCH)
         if master_key is None:
             return
-        repo = PgIngestRepo(settings.database_url)
-        association = await repo.get_association(association_id)
-        if association is None:
+        loaded = await _load_association(settings, association_id)
+        if loaded is None:
             return
-        config = parse_ingest_config(association.config)
+        repo, association, config = loaded
         adapter = build_adapter(
             association.connection, master_key, settings.egress_allow_hosts
         )
         s3_client = build_platform_client(settings)
-        members = []
-        for source_path in source_paths:
-            entry = await repo.get_latest_ledger(association_id, source_path)
-            if entry is not None:
-                members.append(entry)
-        group_obj = ReadyGroup(item_id=item_id, members=members)
         await fetch_stage(
-            repo, association, config, adapter, s3_client, settings.staging_bucket, group_obj
+            repo,
+            association,
+            config,
+            adapter,
+            s3_client,
+            settings.staging_bucket,
+            item_id,
+            source_paths,
         )
 
     queue.register_periodic(poll, name=JOB_POLL, cron=CRON)

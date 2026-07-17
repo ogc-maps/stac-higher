@@ -91,10 +91,8 @@ class DiscoverResult:
     settled: int = 0
     changed_while_seen: int = 0
     unsettled: int = 0
-    in_progress: int = 0
     unchanged: int = 0
     reingest: int = 0
-    retry: int = 0
 
 
 async def discover_stage(
@@ -185,7 +183,6 @@ async def _reconcile(
 
     if latest.status in (STATUS_FETCHING, STATUS_STORED):
         # mid-pipeline; a change is reconciled after itemization completes.
-        result.in_progress += 1
         return
 
     if latest.status == STATUS_ITEMIZED:
@@ -216,5 +213,5 @@ async def _reconcile(
                 size=entry.size,
                 fingerprint=fingerprint,
             )
-            result.retry += 1
+            result.reingest += 1
         return

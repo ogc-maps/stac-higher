@@ -31,8 +31,14 @@ class FileEntry:
     signal (``mtime`` and/or ``etag``). The settled-check compares these across
     two polls; a change after itemization means a new product version. Fields
     are ``None`` when the protocol doesn't expose them (e.g. FTP servers without
-    MLSD facts). ``path`` is the entry name relative to the listed prefix, as
-    each adapter's native listing returns it.
+    MLSD facts).
+
+    ``path`` is **not uniform across adapters** (a known contract gap, ISSUES
+    I-4): S3 returns the full key, SFTP/FTP the name relative to the listed
+    prefix. Consumers must normalize it — ``ingest.discover.relative_source_path``
+    /``source_fetch_path`` do this (strip/rejoin the prefix) so the divergence
+    doesn't leak past DISCOVER. A future uniform (source-relative) contract would
+    let that normalization be deleted.
     """
 
     path: str

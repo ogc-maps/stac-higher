@@ -22,7 +22,6 @@ def _assoc(config: dict) -> IngestAssociation:
     return IngestAssociation(
         id="assoc1",
         collection_id="sentinel-2",
-        connection_id="conn1",
         config=config,
         connection=conn,
     )

@@ -46,6 +46,8 @@ class IngestConfig:
     poll_frequency_seconds: int = DEFAULT_POLL_FREQUENCY_SECONDS
     storage_mode: str = "copy"
     grouping: Grouping = field(default_factory=Grouping)
+    #: post-FETCH source action (leave|delete|move:<path>) — applied by the
+    #: ITEMIZE/post-ingest step (Slice B4); parsed and carried through here.
     post_ingest: str = "leave"
     #: EXTRACT-stage config (Slice B4) — carried through untouched.
     metadata: dict[str, Any] = field(default_factory=dict)
