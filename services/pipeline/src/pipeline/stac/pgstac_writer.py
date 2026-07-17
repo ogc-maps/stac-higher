@@ -26,6 +26,12 @@ class PgstacWriter(abc.ABC):
     async def upsert_items(self, items: Sequence[Mapping[str, Any]]) -> None:
         """Upsert STAC item dicts into pgstac, replacing by id."""
 
+    @abc.abstractmethod
+    async def get_collection_bbox(self, collection_id: str) -> list[float] | None:
+        """The collection's overall extent bbox (``extent.spatial.bbox[0]``),
+        or ``None`` if the collection/extent is absent. Backs the ISSUE I-27
+        opt-in collection-extent geometry fallback (Slice B4a)."""
+
 
 @dataclass
 class PgPgstacWriter(PgstacWriter):
@@ -47,3 +53,19 @@ class PgPgstacWriter(PgstacWriter):
 
         with PgstacDB(dsn=self.dsn) as db:
             Loader(db=db).load_items(items, insert_mode=Methods.upsert)
+
+    async def get_collection_bbox(  # pragma: no cover - thin psycopg wrapper
+        self, collection_id: str
+    ) -> list[float] | None:
+        import psycopg
+
+        async with await psycopg.AsyncConnection.connect(self.dsn) as conn:
+            cur = await conn.execute(
+                "SELECT content->'extent'->'spatial'->'bbox'->0"
+                " FROM pgstac.collections WHERE id = %s",
+                (collection_id,),
+            )
+            row = await cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return [float(v) for v in row[0]]

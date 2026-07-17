@@ -11,10 +11,13 @@ from pipeline.ingest.extract import (
     ExtractError,
     ExtractMember,
     bbox_from_geometry,
+    bbox_to_polygon,
     build_defaults_only,
     build_item,
     build_raster_auto,
     build_sidecar,
+    geometry_from_raster,
+    is_gdal_candidate,
     media_type_for,
     parse_metadata,
     parse_sidecar,
@@ -51,6 +54,31 @@ def test_parse_metadata_sidecar_and_defaults():
     assert cfg.sidecar_pattern == "{basename}.xml"
     assert cfg.sidecar_parser == "json"
     assert cfg.default_datetime == "file_mtime"
+
+
+def test_parse_metadata_default_geometry_absent_is_none():
+    cfg = parse_metadata({})
+    assert cfg.default_geometry is None
+
+
+def test_parse_metadata_default_geometry_collection():
+    cfg = parse_metadata({"defaults": {"geometry": "collection"}})
+    assert cfg.default_geometry == "collection"
+
+
+def test_parse_metadata_default_geometry_unknown_value_ignored():
+    cfg = parse_metadata({"defaults": {"geometry": "nonsense"}})
+    assert cfg.default_geometry is None
+
+
+def test_is_gdal_candidate_raster_and_gridded_true():
+    for name in ("scene.tif", "scene.nc", "scene.grib"):
+        assert is_gdal_candidate(name) is True
+
+
+def test_is_gdal_candidate_non_raster_false():
+    for name in ("scene.bin", "scene.txt"):
+        assert is_gdal_candidate(name) is False
 
 
 def test_media_type_for_known_and_unknown():
@@ -172,6 +200,7 @@ def test_build_sidecar_with_geometry_sets_bbox_and_validates():
     ).encode()
     item = build_sidecar("col", "scene", members, cfg, sidecar_bytes, "/api/assets")
     assert item["bbox"] == [0, 0, 2, 3]
+    assert item["properties"]["stac_higher:geometry_source"] == "sidecar"
     validate_item(item)  # must not raise ("bbox is required if geometry is not null")
 
 
@@ -199,6 +228,56 @@ def _geotiff_bytes():
         ) as ds:
             ds.write(arr)
         return mem.read()
+
+
+def _netcdf_bytes():
+    """A single-variable netCDF built via CreateCopy from an in-memory GTiff
+    (netCDF is blacklisted for `Create`/write but supports CreateCopy)."""
+    import os
+    import tempfile
+
+    import rasterio.shutil as rio_shutil
+
+    arr = np.arange(16, dtype="uint8").reshape(1, 4, 4)
+    transform = from_bounds(-1, -1, 1, 1, 4, 4)
+    with MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff", height=4, width=4, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=transform,
+        ) as ds:
+            ds.write(arr)
+        with mem.open() as src, tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "out.nc")
+            rio_shutil.copy(src, path, driver="netCDF")
+            with open(path, "rb") as f:
+                return f.read()
+
+
+def test_bbox_to_polygon():
+    assert bbox_to_polygon([0, 0, 2, 3]) == {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [2, 0], [2, 3], [0, 3], [0, 0]]],
+    }
+
+
+def test_geometry_from_raster_gtiff_returns_geometry_and_bbox():
+    result = geometry_from_raster(_geotiff_bytes())
+    assert result is not None
+    geometry, bbox = result
+    assert geometry["type"] == "Polygon"
+    assert bbox == pytest.approx([-1, -1, 1, 1])
+
+
+def test_geometry_from_raster_netcdf_returns_geometry_and_bbox():
+    result = geometry_from_raster(_netcdf_bytes())
+    assert result is not None
+    geometry, bbox = result
+    assert geometry["type"] == "Polygon"
+    assert bbox == pytest.approx([-1, -1, 1, 1])
+
+
+def test_geometry_from_raster_non_raster_bytes_returns_none():
+    assert geometry_from_raster(b"not a raster") is None
 
 
 class _FakeS3:
@@ -247,26 +326,107 @@ async def test_build_item_dispatches_raster_auto_reads_from_storage():
     assert item["geometry"] is not None
 
 
-async def test_build_item_defaults_only_reads_nothing():
+async def test_build_item_defaults_only_non_candidate_reads_nothing_and_raises():
+    # scene.bin is not a GDAL-candidate extension: no best-effort read is
+    # attempted, and with no collection_fallback opted in, this is now a
+    # fail-fast ExtractError (I-27 — pgstac rejects null-geometry items).
     members = [_member("scene.bin")]
-    s3 = _FakeS3({})  # no objects — defaults_only must not read
+    s3 = _FakeS3({})  # no objects — a non-candidate primary must not read
+    with pytest.raises(ExtractError):
+        await build_item(
+            collection_id="col", item_id="scene", members=members,
+            metadata={
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+            },
+            s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        )
+
+
+async def test_build_item_defaults_only_recovers_geometry_from_gdal_candidate():
+    # scene.tif IS a GDAL-candidate extension: defaults_only now attempts a
+    # best-effort read even though the strategy itself extracts nothing.
+    members = [_member("scene.tif")]
+    s3 = _FakeS3({("bucket", "assets/col/scene/scene.tif"): _geotiff_bytes()})
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
         s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
     )
-    assert item["geometry"] is None
+    assert item["geometry"] is not None
+    assert item["bbox"] is not None
+    assert item["properties"]["stac_higher:geometry_source"] == "raster"
+
+
+async def test_build_item_defaults_only_collection_fallback_used():
+    members = [_member("scene.bin")]
+    s3 = _FakeS3({})
+    fallback = {
+        "geometry": bbox_to_polygon([10, 20, 30, 40]),
+        "bbox": [10, 20, 30, 40],
+        "source": "collection_extent",
+    }
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
+        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        collection_fallback=fallback,
+    )
+    assert item["geometry"] == fallback["geometry"]
+    assert item["bbox"] == [10, 20, 30, 40]
+    assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
+
+
+async def test_build_item_global_fallback_used():
+    members = [_member("scene.bin")]
+    s3 = _FakeS3({})
+    fallback = {
+        "geometry": bbox_to_polygon([-180, -90, 180, 90]),
+        "bbox": [-180, -90, 180, 90],
+        "source": "global_fallback",
+    }
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
+        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        collection_fallback=fallback,
+    )
+    assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
+
+
+async def test_build_item_no_fallback_raises_extract_error():
+    members = [_member("scene.bin")]
+    s3 = _FakeS3({})
+    with pytest.raises(ExtractError):
+        await build_item(
+            collection_id="col", item_id="scene", members=members,
+            metadata={
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+            },
+            s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        )
 
 
 async def test_build_item_dispatches_sidecar_reads_sidecar_bytes():
+    # The generic_xml sidecar parser never yields a geometry, so this exercises
+    # the ISSUE I-27 best-effort fallback too: scene.tif (the group's raster
+    # member, already in storage from FETCH) recovers a geometry.
     members = [
         _member("scene.tif"),
         ExtractMember("products/scene.xml", "scene.xml", "assets/col/scene/scene.xml", None),
     ]
-    s3 = _FakeS3({("bucket", "assets/col/scene/scene.xml"): _XML})
+    s3 = _FakeS3(
+        {
+            ("bucket", "assets/col/scene/scene.xml"): _XML,
+            ("bucket", "assets/col/scene/scene.tif"): _geotiff_bytes(),
+        }
+    )
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "sidecar", "sidecar": {"pattern": "{basename}.xml"}},
         s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
     )
     assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
+    assert item["geometry"] is not None
+    assert item["properties"]["stac_higher:geometry_source"] == "raster"
