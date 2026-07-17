@@ -89,7 +89,7 @@ No new tables: the asset route derives keys from URL params; uploads derive from
 
 ## Phase 4 — Ingest pipeline 🚧
 
-Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) done**; **Slice B (pipeline ingest chain) in progress** — **B1 (adapter list-metadata + `build_adapter`) done**, **B2+B3 (ingest repo + scheduler + DISCOVER/GROUP/FETCH copy-mode) done**, B4 (EXTRACT/ITEMIZE) is the next unit; `storage_mode: reference` (Slice C) pending.
+Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) done**; **Slice B (pipeline ingest chain) in progress** — **B1 (adapter list-metadata + `build_adapter`) done**, **B2+B3 (ingest repo + scheduler + DISCOVER/GROUP/FETCH copy-mode) done and live-verified** (2026-07-16: MinIO source file → poll → DISCOVER → GROUP → FETCH → canonical storage, byte-identical, idempotent), B4 (EXTRACT/ITEMIZE) is the next unit; `storage_mode: reference` (Slice C) pending.
 
 | Feature | Status | Entry points |
 |---|---|---|

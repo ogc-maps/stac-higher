@@ -25,8 +25,8 @@ SFTP, plain FTP, and S3-over-http pin the resolved IP (rebind-proof). **FTPS con
 ADR 0004 targets a ~10s test-connection turnaround, but Procrastinate's periodic scheduler is **1-minute-granular**. The drain runs every minute and clears the whole pending backlog each tick, so worst-case start latency is ~60s. A true sub-minute drain needs a NOTIFY-woken consumer.
 - Tracked in: [ADR 0004](decisions/0004-app-pipeline-bridge.md) "Revisit"; comment in `services/pipeline/.../jobs/drain.py`.
 
-### I-4 · Adapter `list/get/put/delete` are mock-tested only 🟡
-The full `StorageAdapter` interface is implemented, but only `test()` is exercised live (via the drain job). `list/get/put/delete` are covered by unit tests with mocked clients — no live-server integration yet. Phase 3 (asset service) will be their first real consumer.
+### I-4 · Adapter `list/get` live-verified for S3; SFTP/FTP still mock-only 🟡
+The full `StorageAdapter` interface is implemented. `test()` is exercised live via the drain job, and **the S3 adapter's `list`/`get` are now live-verified** by the Phase 4 ingest e2e (2026-07-16): a file dropped in MinIO flowed poll → DISCOVER → GROUP → FETCH into canonical storage, byte-identical. The **SFTP/FTP** `list`/`get` and all adapters' `put`/`delete` remain covered only by unit tests with mocked clients — no live-server integration yet (SFTP/FTP live-exercise is a Slice B5 follow-up; FTPS blocked on arm64, I-6).
 - Tracked in: here; `services/pipeline/tests/test_adapters.py`.
 
 ### I-5 · Zod v4 ↔ zodResolver `as any` cast 🟡

@@ -755,7 +755,13 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
 - ⬜ **Slice C — `storage_mode: reference`:** the `resolveAssetTarget` branch to
   the source href (persisted in `ingest_files`); not required by the done-when,
   so it lands last.
-- ⬜ **Slice B5 — integration + live end-to-end test.**
+- 🟡 **Slice B5 — integration + live end-to-end test.** The **copy chain is
+  live-verified** (2026-07-16): an S3/MinIO source file flowed poll → DISCOVER
+  (seen → settled across two polls) → GROUP → FETCH into canonical storage
+  (`assets/e2e-ingest-test/scene/scene.tif`), byte-identical (sha256 match),
+  ledger `stored`, idempotent across re-polls. Remaining for full B5: the
+  end-to-end assertion of a **queryable STAC item** (needs ITEMIZE, Slice B4)
+  and an SFTP/FTP source run (I-4).
 - **Done when:** files dropped on a source connection appear as STAC items
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
