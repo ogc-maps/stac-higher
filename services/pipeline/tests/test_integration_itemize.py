@@ -5,14 +5,17 @@ Requires the compose stack (pgstac at :5433) with a test collection present.
     DATABASE_URL=postgresql://username:password@localhost:5433/postgis \
         uv run pytest tests/test_integration_itemize.py
 
-NOTE (assumption flagged for the controller): the collection fixture below
-calls `pgstac.create_collection(...)` / `pgstac.delete_collection(...)`.
-These names were not verified against a live pgstac instance (no DB
-available while writing this test). pgstac v0.9.11 is expected to expose
-these, but if the live run errors on either call, check the exact helper
-names with `\\df pgstac.*collection*` in psql — they may instead be
-`pgstac.upsert_collection` or similarly named depending on version — and
-adjust here accordingly.
+The collection fixture uses `pgstac.create_collection(...)` /
+`pgstac.delete_collection(...)` — both confirmed present on the running
+pgstac (0.9.x) during the live verification run.
+
+NOTE (live-run finding, ISSUE I-27): pgstac's `items` table enforces a
+NOT NULL `geometry` column, so an item MUST carry a geometry to be
+upsertable — even though the STAC spec and stac-pydantic both permit
+`geometry: null`. This test therefore uses a real Polygon (the `raster_auto`
+path always derives one). Items from the `defaults_only` strategy (and a
+`sidecar` with no parsed geometry) produce `geometry: null` and cannot be
+catalogued in pgstac as-is; see ISSUE I-27 for the open product decision.
 """
 
 import json
@@ -28,9 +31,15 @@ COLLECTION = "b4-itest"
 
 
 def _item(item_id, dtstr):
+    # pgstac requires a non-null geometry (ISSUE I-27); use a small real Polygon.
     return {
         "type": "Feature", "stac_version": "1.0.0", "stac_extensions": [],
-        "id": item_id, "collection": COLLECTION, "geometry": None,
+        "id": item_id, "collection": COLLECTION,
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+        },
+        "bbox": [0, 0, 1, 1],
         "properties": {"datetime": dtstr}, "assets": {}, "links": [],
     }
 
@@ -70,4 +79,4 @@ async def test_upsert_then_query_and_update(collection):
         cur = await conn.execute(
             "SELECT content->'properties'->>'datetime' FROM pgstac.items WHERE id = 'scene-1'")
         row = await cur.fetchone()
-    assert row[0].startswith("2022-02-02")
+    assert row is not None and row[0].startswith("2022-02-02")
