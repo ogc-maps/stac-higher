@@ -123,13 +123,21 @@ The built item is **identical** to copy mode: asset href stays
 `/api/assets/{collection}/{item}/{filename}` in both modes (the redirect
 difference lives entirely in the app's `resolveAssetTarget`).
 
-### 4.4 ITEMIZE / post-ingest
+### 4.4 ITEMIZE / post-ingest — reject destructive actions in reference mode
 
-No functional change beyond routing the byte-source. `post_ingest` (`leave` /
-`move` / `delete`) still applies via the adapter. Note: `delete`/`move` on a
-*referenced* source removes the very bytes the catalog points at — documented as
-a caveat; `leave` is the sane default for reference and what the demo uses. (No
-new guard in this slice; logged in ISSUES.)
+`delete`/`move` on a *referenced* source removes the very bytes the catalog
+points at, so reference mode must not perform them. Two layers:
+
+1. **App config guard (primary, fail-fast — §5.3):** a cross-field refinement on
+   `ingestConfigSchema` rejects a create/update where `storage_mode ===
+   "reference"` and `post_ingest` is `delete` or `move:<path>`, with a clear
+   user-facing message. `leave` is the only valid `post_ingest` for reference.
+2. **Pipeline skip (defense-in-depth):** `apply_post_ingest` (or `run_itemize`
+   before calling it) treats a destructive `post_ingest` as `leave` when
+   `config.storage_mode == "reference"`, logging that it was skipped. This
+   covers any config that predates the guard or was written directly to the DB.
+   No exception — a referenced item still itemizes; only the destructive cleanup
+   is suppressed.
 
 ## 5. App changes (TypeScript)
 
@@ -166,6 +174,28 @@ back to a canonical object that does not exist for a referenced item.
   `{ url }`).
 - Migration 006 added to `app/src/lib/db/migrate.ts` `MIGRATIONS`.
 
+### 5.3 Reference + destructive-`post_ingest` guard (`associations/schemas.ts`)
+
+Add a `.superRefine` to `ingestConfigSchema` (both `storage_mode` and
+`post_ingest` are siblings on this object, so it needs no route context):
+
+```ts
+.superRefine((cfg, ctx) => {
+  if (cfg.storage_mode === "reference" && cfg.post_ingest !== "leave") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["post_ingest"],
+      message:
+        "reference mode cannot delete or move the source — its bytes are the " +
+        "catalog's asset; use post_ingest 'leave' (or switch to copy mode)",
+    });
+  }
+});
+```
+
+This runs for both create and update (both parse `config` through
+`ingestConfigSchema`), returning a 400 with a field-anchored message.
+
 ## 6. What stays the same
 
 - Association config schema (`storage_mode` already parsed app-side and in
@@ -192,6 +222,12 @@ App (`npm run verify` → vitest):
   `"reference"`) and falls back to canonical presign when absent; DB error
   propagates.
 - migration 006 present/idempotent (mirrors existing migrate tests if any).
+- schema guard: `storage_mode: reference` + `post_ingest: delete`/`move:<path>`
+  fails parse on `["post_ingest"]`; `reference` + `leave` and `copy` + any
+  `post_ingest` still pass.
+
+Pipeline also: `apply_post_ingest` skips a destructive action (logs it) when
+`storage_mode == "reference"`; copy mode still performs it.
 
 ## 8. Live verification (against the running docker stack)
 
@@ -214,8 +250,6 @@ Folded in from Phase 4 completeness (ROADMAP "Remaining (deferred)"):
   alternative to today's public-URL approach.
 - **Reference-mode checksum** (would require reading source bytes at FETCH; we
   defer — fingerprint drives versioning).
-- **`post_ingest: delete`/`move` on a referenced source** deletes the bytes the
-  catalog references — caveat only, no guard this slice.
 - **Browser-reachable source endpoint**: the constructed URL uses the
   connection's configured endpoint; a split internal/browser endpoint is the
   same class of concern as canonical (ISSUES I-15).
