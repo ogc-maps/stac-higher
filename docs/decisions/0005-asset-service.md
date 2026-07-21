@@ -69,6 +69,15 @@ satisfies it, so local flows work unchanged.
 - `reference` mode, retention/GC of canonical assets, and per-collection read
   authz all have a named place to land (this function / ADR 0002) rather than
   reshaping the route later.
+- **Slice C change (DB dependency):** Since reference mode was implemented,
+  `resolveAssetTarget` queries the `ingest_files (item_id)` index on every asset
+  GET — both copy and reference modes now depend on the app database (previously
+  copy-mode was pure offline presign). This is deliberate: on a DB error the route
+  fails fast (500) rather than falling back to canonical presign, because a
+  fallback would mis-serve reference-mode items (bytes not in canonical storage) —
+  a 500 is safer than a confident 404. The per-request cost is negligible
+  (single indexed lookup); a negative cache or item-level mode marker are
+  possible future optimizations if volume warrants it (cross-reference ISSUES I-34).
 
 ## Revisit
 
@@ -76,3 +85,21 @@ When Phase 4 introduces `storage_mode` and Phase 7 introduces the finalize
 worker, revisit whether manual uploads should also route through staging for a
 uniform validation path — the direct-to-canonical shortcut is a Phase-3
 simplification, not a permanent invariant.
+
+**Update — Phase 4 Slice C (`storage_mode: reference`), 2026-07-20:** shipped
+as the third branch of `resolveAssetTarget` predicted above, but narrower than
+"return the source href for referenced assets" implied: it only resolves
+**durably-reachable** sources. The pipeline persists a stable,
+credential-free source URL (`S3Adapter.public_object_url`) in
+`ingest_files.source_href` at FETCH; the route (`lookupReferenceHref` in
+`app/src/lib/storage/reference.ts`) 302s straight to it with **no presigning
+and no decryption** — the app's decryption boundary (`crypto.ts`, ADR-adjacent
+invariant: only the pipeline ever holds decrypted connection credentials) is
+unmodified by this branch. A source that requires credentials to read (a
+private bucket, SFTP/FTP) has **no** reference path yet — it must use `copy`
+mode. Private-source reference is deferred to a pipeline resolver endpoint
+that would mint a fresh presigned URL per read on the app's behalf (tracked as
+ISSUES I-32); a reference-mode checksum (I-33) and the source-endpoint
+browser-reachability split, the same class of gap as I-15 (I-34), are also
+deferred. Live end-to-end verification of this branch (Task 10) is pending as
+of this update.
