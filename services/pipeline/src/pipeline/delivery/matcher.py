@@ -8,6 +8,7 @@ no I/O) so it is fully unit-testable; the Pg wiring lives in dispatcher/repo.py.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 from cql2 import Expr
 
 from pipeline.delivery.config import parse_delivery_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,10 +37,26 @@ class Match:
 
 
 def _item_filter_passes(item_filter: str | None, item: dict[str, Any]) -> bool:
-    """Evaluate a CQL2 text filter against a STAC item. Null filter = pass."""
+    """Evaluate a CQL2 text filter against a STAC item. Null filter = pass.
+
+    Any evaluation error (a malformed filter string, or a filter referencing a
+    property this item doesn't have — cql2 raises rather than returning False
+    in that case) is treated as "does not match" so it is skipped in
+    isolation, never poisoning the rest of :func:`match_item`'s loop over
+    other associations.
+    """
     if not item_filter:
         return True
-    return bool(Expr(item_filter).matches(item))
+    try:
+        return bool(Expr(item_filter).matches(item))
+    except Exception:
+        logger.warning(
+            "item_filter evaluation failed, treating as no-match "
+            "(item_filter=%r, item_id=%r)",
+            item_filter,
+            item.get("id"),
+        )
+        return False
 
 
 def match_item(

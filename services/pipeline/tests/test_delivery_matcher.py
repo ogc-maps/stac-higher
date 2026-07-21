@@ -35,3 +35,27 @@ def test_asset_keys_intersection():
 def test_empty_asset_intersection_skips():
     a = _assoc("a", {"path_template": "{filename}", "asset_keys": ["missing"]})
     assert match_item(ITEM, [a]) == []
+
+
+def test_filter_on_missing_property_isolated_from_other_associations():
+    # This item has no "eo:cloud_cover" property at all.
+    item_missing_property = {
+        "id": "scene-2",
+        "collection": "sensor-a",
+        "properties": {},
+        "assets": {"data": {"href": "..."}},
+    }
+    references_missing = _assoc(
+        "references-missing",
+        {"path_template": "{filename}", "item_filter": "eo:cloud_cover < 10"},
+    )
+    no_filter = _assoc("no-filter", {"path_template": "{filename}"})
+    matches = match_item(item_missing_property, [references_missing, no_filter])
+    assert [m.association_id for m in matches] == ["no-filter"]
+
+
+def test_malformed_filter_skipped_without_raising():
+    a = _assoc("bad", {"path_template": "{filename}", "item_filter": "not a valid cql2 filter (("})
+    b = _assoc("good", {"path_template": "{filename}"})
+    matches = match_item(ITEM, [a, b])
+    assert [m.association_id for m in matches] == ["good"]
