@@ -170,8 +170,8 @@ a single row — not delete+insert) / no-op (identical) / `delete` — the
 transaction-API delete+insert of [ADR 0007](decisions/0007-outbox-trigger-ownership.md)
 is a different write path; both are benign for delivery (see ISSUES).
 
-**Slice B-ii — payloads, policies, reference source, S3→S3 copy** (code done;
-live verification pending). Entry points:
+**Slice B-ii — payloads, policies, reference source, S3→S3 copy** (done;
+live-verified 23/23 on 2026-07-22 vs real pgstac + MinIO). Entry points:
 
 - **`delivered_assets`** — migration `009_delivery_log_delivered_assets`
   (`app/src/lib/db/migrate.ts`) adds `delivery_log.delivered_assets` jsonb: a

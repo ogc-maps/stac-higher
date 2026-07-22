@@ -208,7 +208,7 @@ Ownership (ADR 0001): the pipeline reads `collection_connections`/`connections`
 **Slice B-i scope:** canonical bytes → S3/MinIO destination, live-verified
 2026-07-21.
 
-**Slice B-ii scope (code done; live verification pending):**
+**Slice B-ii scope (done; live-verified 23/23 on 2026-07-22):**
 
 - **`delivered_assets`** (migration `009_delivery_log_delivered_assets`) —
   `delivery_log.delivered_assets` jsonb, a per-asset `{fingerprint, size,
