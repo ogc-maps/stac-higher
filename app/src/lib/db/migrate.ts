@@ -373,6 +373,19 @@ const MIGRATIONS = [
         WHERE status = 'failed';
     `,
   },
+  {
+    // Phase 5 Slice B-ii (ROADMAP §6.4): per-asset delivered fingerprints — the
+    // change-detection substrate for on_update (redeliver only changed assets)
+    // and log-based overwrite. Shape: {asset_key: {fingerprint, size, filename}}.
+    // fingerprint is "sha256:<hex>" (streamed) or "etag:<etag>/<size>"
+    // (server-side copy); kinds compare unequal → worst case one redundant
+    // redeliver (at-least-once, ISSUES I-43).
+    name: "009_delivery_log_delivered_assets",
+    sql: `
+      ALTER TABLE stac_higher.delivery_log
+        ADD COLUMN IF NOT EXISTS delivered_assets jsonb NOT NULL DEFAULT '{}'::jsonb;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

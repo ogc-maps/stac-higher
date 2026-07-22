@@ -287,20 +287,23 @@ row, and delivery is overwrite-always (S3 direct atomic PUT / SFTP-FTP
 bytes to the same key and touches the same row — no duplicate object, no partial
 file, no divergent state. Worst case is `attempts` over-counting and a brief
 status flap under truly concurrent redelivery. Genuine dedup/leader-election is
-deferred to Slice C / B-iii; see also I-40.
+deferred to Slice C / B-iii; see also I-40. `delivery_log.delivered_assets`
+fingerprints make redundant redelivery cheap but do not dedup concurrent
+dispatch.
 - Tracked in: `services/pipeline/.../dispatcher/{loop,repo}.py`,
   `.../delivery/repo.py`; found in the Slice B-i whole-branch review.
 
-### I-44 · `delivery_log.attempts` is a lifetime counter, not reset on redelivery ⚪
-`upsert_pending`'s `ON CONFLICT DO UPDATE` resets `status='pending'` but leaves
-`attempts` untouched, so a legitimately-redelivered item's `attempts` climbs
-across independent events (each `mark_delivering` increments). Harmless in B-i
-(`attempts` is observability only), but when B-iii adds `max_attempts`
-dead-lettering, a frequently-redelivered row could be dead-lettered without a real
-retry sequence. The redelivery reset point is exactly `upsert_pending` — reset
-`attempts=0` there (or split a per-cycle counter) when B-iii lands.
+### I-44 · `delivery_log.attempts` is a lifetime counter, not reset on redelivery ✅ resolved (Slice B-ii)
+`upsert_pending`'s `ON CONFLICT DO UPDATE` used to reset `status='pending'` but
+leave `attempts` untouched, so a legitimately-redelivered item's `attempts`
+climbed across independent events (each `mark_delivering` increments).
+Harmless in B-i (`attempts` was observability only), but B-iii's planned
+`max_attempts` dead-lettering would have dead-lettered a frequently-redelivered
+row without a real retry sequence. **Resolved by Slice B-ii**: `upsert_pending`
+now resets `attempts = 0` on the redelivery conflict branch, so `attempts`
+counts a single delivery cycle, not the item's lifetime.
 - Tracked in: `services/pipeline/.../delivery/repo.py` (`upsert_pending`); found in
-  the Slice B-i whole-branch review.
+  the Slice B-i whole-branch review, resolved in Slice B-ii.
 
 ### I-45 · Concrete adapter `move()` bodies are inspection-only; SFTP/FTP delivery not live-verified 🟡
 Slice B-i added `move()` to every adapter (S3 copy+delete, SFTP `posix_rename`,
@@ -328,4 +331,44 @@ are benign for delivery: `dispatch_once` treats `insert`/`update` identically
 the outbox `op` (already tracked as I-37).
 - Tracked in: `app/src/lib/db/migrate.ts` (trigger),
   `services/pipeline/.../dispatcher/loop.py`; found in the Slice B-i live verification.
+
+### I-47 · Copy-path etag fingerprints are endpoint-generation-specific ⚪
+`delivery_log.delivered_assets` (migration 009) stores an `etag:<etag>/<size>`
+fingerprint for server-side-copied assets and a `sha256:<hex>` fingerprint for
+streamed ones — the two kinds intentionally compare unequal. Switching an
+association between streamed (sha256 checksums) and copy (no checksums, or
+md5) transfer, or a destination-bucket re-upload that changes the object's
+etag generation (e.g. a copy that changes storage class or a bucket
+migration), makes the recorded fingerprint compare unequal to the next
+delivery's, costing one redundant redeliver. Benign by design — delivery is
+at-least-once (I-43) and the redeliver produces byte-identical data — but
+worth surfacing to an operator rather than silently re-transferring. Noted for
+Phase 6 observability.
+- Tracked in: `services/pipeline/.../delivery/transfer.py` (`can_server_side_copy`,
+  `etag_fingerprint`, `sha256_fingerprint`); found in the Slice B-ii review.
+
+### I-48 · md5 checksum sidecars ride the canonical ETag, which is NOT the content MD5 under SSE-KMS/SSE-C 🟡
+The B-ii server-side-copy path writes the `.md5` sidecar from a single-part
+canonical ETag (`worker.py`, `"-" in etag` is the only guard). On an
+SSE-KMS/SSE-C-encrypted canonical bucket, single-part ETags are not the MD5, so
+the sidecar would fail a consumer's `md5sum -c`. Spec-level assumption (the
+B-ii design doc licenses it); safe on local MinIO and SSE-S3. B-iii: document
+the bucket constraint or add a force-streaming flag.
+- Tracked in: `services/pipeline/src/pipeline/delivery/worker.py`; found in the
+  Slice B-ii whole-branch review.
+
+### I-49 · Reference-mode delivery residuals from the B-ii whole-branch review ⚪
+Covering: (1) reference routing is keyed by bare basename (`ref_sources` dict
+keyed on the source path's last segment vs the asset href's last segment) — two
+ledger rows sharing a basename, or a canonical asset coincidentally matching a
+reference row's basename, mis-route silently; log on collision at minimum.
+(2) A mid-batch failure discards the partial `delivered` fingerprint map
+(`mark_failed` drops it), so the B-iii retry rewrites already-delivered assets
+within one cycle. (3) The completion manifest never prunes keys no longer
+present in the item (stale entries listed as current). (4) Missing tests:
+source-read failure → `mark_failed`, a mixed reference+canonical item, md5
+checksums + copy-failure fallback combo. All benign under at-least-once (I-43);
+address alongside the B-iii retry sweep.
+- Tracked in: `services/pipeline/src/pipeline/delivery/{worker,repo}.py`; found
+  in the Slice B-ii whole-branch review.
 

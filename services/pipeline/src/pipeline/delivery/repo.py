@@ -13,10 +13,12 @@ items; INSERT/UPDATEs only ``delivery_log``. Never runs DDL.
 from __future__ import annotations
 
 import abc
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from pipeline.connections.repo import ConnectionRow, _to_connection_row
+from pipeline.ingest.discover import source_fetch_path
 
 
 @dataclass
@@ -31,6 +33,28 @@ class DeliverTarget:
     connection: ConnectionRow
 
 
+@dataclass
+class DeliveryRow:
+    """Prior delivery_log state for one (association, item) — the substrate for
+    the on_update gate and the log-based overwrite gate (spec decisions 1-2)."""
+
+    id: str
+    status: str
+    attempts: int
+    delivered_assets: dict[str, Any]
+
+
+@dataclass
+class ReferenceSource:
+    """A reference-mode source file for an item: read in place from the ingest
+    source connection's adapter (spec decision 3 — the pipeline has no HTTP
+    client; ``source_href`` presence flags reference mode)."""
+
+    filename: str
+    fetch_path: str
+    connection: ConnectionRow
+
+
 class DeliveryRepo(abc.ABC):
     @abc.abstractmethod
     async def load_target(self, association_id: str) -> DeliverTarget | None:
@@ -40,6 +64,19 @@ class DeliveryRepo(abc.ABC):
     @abc.abstractmethod
     async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
         """The full STAC item from pgstac, or ``None`` if not present."""
+
+    @abc.abstractmethod
+    async def get_row(self, association_id: str, item_id: str) -> DeliveryRow | None:
+        """The existing delivery_log row (status + delivered_assets), or None on
+        first delivery. Read BEFORE upsert_pending, which resets status."""
+
+    @abc.abstractmethod
+    async def load_reference_sources(self, item_id: str) -> list[ReferenceSource]:
+        """Latest-version ingest_files rows for this item with a source_href —
+        the item's reference-mode files, with their source connection loaded.
+        A reference asset whose source association/connection is disabled is
+        not returned, so its delivery fails with a clear canonical-object-missing
+        error instead of silently reading a disabled source."""
 
     @abc.abstractmethod
     async def upsert_pending(
@@ -53,8 +90,14 @@ class DeliveryRepo(abc.ABC):
         """Flip to delivering and increment attempts."""
 
     @abc.abstractmethod
-    async def mark_delivered(self, row_id: str, byte_count: int) -> None:
-        """Flip to delivered; record bytes + delivered_at; clear error."""
+    async def mark_delivered(
+        self,
+        row_id: str,
+        byte_count: int,
+        delivered_assets: dict[str, Any] | None = None,
+    ) -> None:
+        """Flip to delivered; record bytes + delivered_at + the per-asset
+        fingerprint map; clear error."""
 
     @abc.abstractmethod
     async def mark_failed(self, row_id: str, error: str) -> None:
@@ -107,6 +150,57 @@ class PgDeliveryRepo(DeliveryRepo):
             row = await cur.fetchone()
         return dict(row[0]) if row and row[0] else None
 
+    async def get_row(  # pragma: no cover
+        self, association_id: str, item_id: str
+    ) -> DeliveryRow | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT id, status, attempts, delivered_assets"
+                " FROM stac_higher.delivery_log"
+                " WHERE association_id = %s AND item_id = %s",
+                (association_id, item_id),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return DeliveryRow(
+            id=str(row[0]),
+            status=row[1],
+            attempts=row[2],
+            delivered_assets=dict(row[3]) if row[3] else {},
+        )
+
+    async def load_reference_sources(  # pragma: no cover
+        self, item_id: str
+    ) -> list[ReferenceSource]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ON (f.association_id, f.source_path)"
+                " f.source_path, cc.config,"
+                f" {_CONNECTION_COLUMNS}"
+                " FROM stac_higher.ingest_files f"
+                " JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
+                " JOIN stac_higher.connections c ON c.id = cc.connection_id"
+                " WHERE f.item_id = %s AND f.source_href IS NOT NULL"
+                " AND cc.enabled = true AND c.enabled = true"
+                " ORDER BY f.association_id, f.source_path, f.version DESC",
+                (item_id,),
+            )
+            rows = await cur.fetchall()
+        sources: list[ReferenceSource] = []
+        for row in rows:
+            source_path, ingest_config = row[0], dict(row[1]) if row[1] else {}
+            sources.append(
+                ReferenceSource(
+                    filename=source_path.rsplit("/", 1)[-1],
+                    fetch_path=source_fetch_path(
+                        ingest_config.get("source_path", ""), source_path
+                    ),
+                    connection=_to_connection_row(row[2:]),
+                )
+            )
+        return sources
+
     async def upsert_pending(  # pragma: no cover
         self, association_id: str, item_id: str, item_created_at: str | None
     ) -> str:
@@ -117,6 +211,7 @@ class PgDeliveryRepo(DeliveryRepo):
                 " VALUES (%s, %s, %s, 'pending', 0)"
                 " ON CONFLICT (association_id, item_id) DO UPDATE"
                 " SET status = 'pending',"
+                "     attempts = 0,"
                 "     item_created_at = EXCLUDED.item_created_at,"
                 "     updated_at = now()"
                 " RETURNING id",
@@ -136,14 +231,20 @@ class PgDeliveryRepo(DeliveryRepo):
             )
             await conn.commit()
 
-    async def mark_delivered(self, row_id: str, byte_count: int) -> None:  # pragma: no cover
+    async def mark_delivered(  # pragma: no cover
+        self,
+        row_id: str,
+        byte_count: int,
+        delivered_assets: dict[str, Any] | None = None,
+    ) -> None:
         async with await self._connect() as conn:
             await conn.execute(
                 "UPDATE stac_higher.delivery_log"
                 " SET status = 'delivered', bytes = %s, error = NULL,"
+                "     delivered_assets = %s::jsonb,"
                 "     delivered_at = now(), updated_at = now()"
                 " WHERE id = %s",
-                (byte_count, row_id),
+                (byte_count, json.dumps(delivered_assets or {}), row_id),
             )
             await conn.commit()
 
