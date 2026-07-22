@@ -46,4 +46,7 @@ def can_server_side_copy(
         return True
     if connection_endpoint is None or platform_endpoint is None:
         return False
-    return _normalized(connection_endpoint) == _normalized(platform_endpoint)
+    try:
+        return _normalized(connection_endpoint) == _normalized(platform_endpoint)
+    except ValueError:  # malformed endpoint (e.g. non-numeric port) — never copy
+        return False

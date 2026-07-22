@@ -46,3 +46,8 @@ def test_copy_gate_mixed_none():
 
 def test_copy_gate_host_case_insensitive():
     assert can_server_side_copy("s3", "http://MinIO:9000", "http://minio:9000")
+
+
+def test_copy_gate_malformed_port_degrades_to_stream():
+    assert not can_server_side_copy("s3", "http://minio:abc", "http://minio:9000")
+    assert not can_server_side_copy("s3", "http://minio:9000", "http://minio:abc")
