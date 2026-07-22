@@ -33,3 +33,39 @@ async def test_mark_failed_records_error():
     await repo.mark_failed(rid, "boom")
     assert repo.rows[rid]["status"] == "failed"
     assert repo.rows[rid]["error"] == "boom"
+
+
+async def test_upsert_pending_resets_attempts_on_redelivery():
+    repo = FakeDeliveryRepo()
+    rid = await repo.upsert_pending("a1", "scene", None)
+    await repo.mark_delivering(rid)
+    await repo.mark_delivered(
+        rid, 3, {"data": {"fingerprint": "sha256:x", "size": 3, "filename": "a.tif"}}
+    )
+    # A new event for the same (association, item) starts a fresh attempt cycle.
+    rid2 = await repo.upsert_pending("a1", "scene", None)
+    assert rid2 == rid
+    assert repo.rows[rid]["attempts"] == 0
+    assert repo.rows[rid]["status"] == "pending"
+
+
+async def test_get_row_returns_prior_state():
+    repo = FakeDeliveryRepo()
+    assert await repo.get_row("a1", "scene") is None
+    rid = await repo.upsert_pending("a1", "scene", None)
+    await repo.mark_delivering(rid)
+    delivered = {"data": {"fingerprint": "sha256:abc", "size": 7, "filename": "a.tif"}}
+    await repo.mark_delivered(rid, 7, delivered)
+    row = await repo.get_row("a1", "scene")
+    assert row is not None
+    assert row.status == "delivered"
+    assert row.delivered_assets == delivered
+
+
+async def test_load_reference_sources_filters_by_item():
+    from pipeline.delivery.repo import ReferenceSource
+
+    src = ReferenceSource(filename="a.tif", fetch_path="incoming/a.tif", connection=None)
+    repo = FakeDeliveryRepo(reference_sources={"scene": [src]})
+    assert await repo.load_reference_sources("scene") == [src]
+    assert await repo.load_reference_sources("other") == []
