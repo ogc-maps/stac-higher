@@ -933,6 +933,10 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   delivered byte-identical from the source bucket (sha256 fingerprint, no
   canonical object ever existed); a disabled source connection failed the
   delivery with a clear error and recovered on re-enable (`attempts=1`).
+  A post-merge `/simplify` pass (behavior-identical, suite 310/2 after) deduped
+  the worker's stream+hash path (off the event loop), removed a double-hash and
+  `overwrite: never` wasted reads, named `is_multipart_etag`, aligned the jsonb
+  write style, and consolidated test fixtures.
 - ⬜ **Slice B-iii — remaining byte-moving scope:** retry → dead-letter
   (app-managed sweep; `next_attempt_at` column), per-connection concurrency
   caps, and **live SFTP + FTP** destination runs (`move()` code shipped in
